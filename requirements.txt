@@ -1,13 +1,1 @@
-# C组系统依赖
-python-telegram-bot==21.6      # Telegram 机器人
-anthropic==0.39.0              # Claude API (报单解析)
-fastapi==0.115.0               # 审核后台 web
-uvicorn[standard]==0.31.0      # web 服务器
-jinja2==3.1.4                  # 后台模板
-python-multipart==0.0.12       # 表单
-sqlalchemy==2.0.35             # ORM (数据库)
-psycopg2-binary==2.9.9         # PostgreSQL 驱动 (Railway)
-apscheduler==3.10.4            # 定时(日报/月报)
-pillow==10.4.0                 # 报表 PNG 生成
-openpyxl==3.1.5               # Excel 导入/导出
-python-dotenv==1.0.1          # 环境变量
+web: uvicorn cgroup.web.app:app --host 0.0.0.0 --port $PORT
