@@ -14,7 +14,15 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
 
 
 def init_db():
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine)          # 只建缺失的表
+    # 已有表补结款两轨列 (create_all 不改已有表) + 回填空状态
+    from ..core.status import ensure_columns, backfill
+    ensure_columns(engine)
+    s = SessionLocal()
+    try:
+        backfill(s)
+    finally:
+        s.close()
 
 
 def get_session():

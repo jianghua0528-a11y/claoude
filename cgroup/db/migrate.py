@@ -150,6 +150,7 @@ def _build_mama_lookup(session):
 
 def migrate_orders(wb, session):
     from .models import Order, Artist, Venue
+    from ..core.status import derive_status
     db = wb["📥 数据库"]
     hdr = {db.cell(row=3, column=c).value: c
            for c in range(1, db.max_column + 1) if db.cell(row=3, column=c).value}
@@ -198,13 +199,16 @@ def migrate_orders(wb, session):
         vname = str(g(r, "场所")).strip() if g(r, "场所") else None
         vid = ven_id.get(vname) or ven_alias.get(vname)
         flow = g(r, "[废]M_流向"); flow = str(flow).strip() if flow and str(flow) != "清" else None
+        mode = mode_of(mama, dtype)
+        cs, ms = derive_status(credit_k=K, cash_m=M, mode=mode, flow=flow)
         session.add(Order(
             seq=g(r, "序号"), biz_date=_parse_date(g(r, "日期")),
             artist_id=art_id.get(str(g(r, "艺名")).strip()) if g(r, "艺名") else None,
             venue_id=vid, room=str(g(r, "包厢")).strip() if g(r, "包厢") else None,
             booker=str(g(r, "预约人")).strip() if g(r, "预约人") else None,
-            mama_id=mid, mode=mode_of(mama, dtype), flow=flow,
+            mama_id=mid, mode=mode, flow=flow,
             credit_k=K, cash_m=M, ticket_o=float(g(r, "门票(MYR)") or 0),
+            credit_status=cs, cash_status=ms,
             wp=wpv, currency_k="MYR", currency_m=cm,
             settle_rate=fx_rate,
             customer=str(g(r, "客人")).strip()[:20] if g(r, "客人") else None,

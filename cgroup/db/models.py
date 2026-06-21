@@ -94,6 +94,12 @@ class Order(Base):
     end_time: Mapped[Optional[str]] = mapped_column(String(8))
     remark: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(10), default="已审核")  # 已审核/作废
+    # 结款两轨 (各走各时钟): 挂账→妈咪结款; 现金代收→工资发放; 现金自留→工资倒扣
+    credit_status: Mapped[Optional[str]] = mapped_column(String(10))   # 无K/待结/部分/已结/直结
+    credit_paid_date: Mapped[Optional[date]] = mapped_column(Date)     # 挂账结款日
+    credit_ref: Mapped[Optional[str]] = mapped_column(String(40))      # 挂账结款流水ID
+    cash_status: Mapped[Optional[str]] = mapped_column(String(10))     # 无M/待/已/直结
+    cash_settle_date: Mapped[Optional[date]] = mapped_column(Date)     # 现金结算日
     source_msg_id: Mapped[Optional[str]] = mapped_column(String(60))  # 溯源到群消息
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

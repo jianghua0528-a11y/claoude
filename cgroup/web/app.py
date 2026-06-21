@@ -18,6 +18,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from ..db.session import get_session, init_db
 from ..db.models import Order, Artist, Mama, Venue, ReviewItem, OperationLog
 from ..core.settlement import Order as EOrder, compute
+from ..core import status as ST
 
 app = FastAPI(title="C组审核后台")
 security = HTTPBasic()
@@ -61,6 +62,12 @@ td{padding:7px 8px;border-bottom:1px solid #F4C0D1}
 .btn.x{background:#9c9a92}
 .warn{display:inline-block;padding:1px 7px;background:#FBEAF0;border:1px solid #993556;border-radius:4px;color:#993556;font-size:11px;margin-left:4px}
 .muted{color:#888;font-size:13px}
+.bd{display:inline-block;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.bd.due{background:#FDECEA;color:#C0392B}
+.bd.ok{background:#E8F6EF;color:#2E7D52}
+.bd.dir{background:#EEE;color:#777}
+.tg{padding:3px 7px;font-size:11px;border:none;border-radius:5px;background:#993556;color:#fff;cursor:pointer}
+.tg.u{background:#bbb}
 </style></head><body>
 <div class=top><b>C组审核后台</b>__NAV__</div><div class=wrap>__BODY__</div></body></html>"""
 
@@ -90,7 +97,8 @@ def dashboard(user=Depends(auth)):
         if not orders:
             return page("看板", card("还没数据。先去 <a href='/upload'>导入数据</a> 上传旧主文件。"), "home")
         SK = SM = SO = a = m = c = 0.0
-        wages, recv = {}, {}
+        wages, due_mama = {}, {}
+        col_cnt = col_sum = sk_cnt = sk_sum = 0          # 代收/自留 两轨待清
         for o in orders:
             r = compute(EOrder(K=o.credit_k, M=o.cash_m, O=o.ticket_o,
                                mode=o.mode, flow=o.flow, wp=o.wp))
@@ -98,8 +106,13 @@ def dashboard(user=Depends(auth)):
             a += r.artist_net; m += r.mama_net; c += r.company_net
             if o.artist_id:
                 wages[o.artist_id] = wages.get(o.artist_id, 0) + r.artist_month_end
-            if o.mama_id:
-                recv[o.mama_id] = recv.get(o.mama_id, 0) + r.mama_receivable - r.mama_rebate
+            # ── 三轨待清 ──
+            if o.mama_id and ST.is_due_from_mama(o.credit_status):
+                due_mama[o.mama_id] = due_mama.get(o.mama_id, 0) + r.mama_receivable
+            if ST.is_due_to_artist(o.cash_status, o.flow):
+                col_cnt += 1; col_sum += o.cash_m
+            if ST.is_due_clawback(o.cash_status, o.flow):
+                sk_cnt += 1; sk_sum += o.cash_m
         art = {x.id: x.name for x in s.query(Artist).all()}
         mam = {x.id: x.name for x in s.query(Mama).all()}
         pending = s.query(ReviewItem).filter_by(status="待审").count()
@@ -124,10 +137,18 @@ def dashboard(user=Depends(auth)):
 
         rrows = "".join(
             f"<tr><td>{mam.get(k, k)}</td><td class=r>{fmt(v)}</td></tr>"
-            for k, v in sorted(recv.items(), key=lambda x: -x[1])[:12] if abs(v) > 0.5)
-        rtab = f"<h2>妈咪应结C组 Top</h2><table><tr><th>妈咪</th><th class=r>应结(MYR)</th></tr>{rrows}</table>"
+            for k, v in sorted(due_mama.items(), key=lambda x: -x[1]) if abs(v) > 0.5)
+        rtab = (f"<h2>① 待妈咪结款 · 应收账（{len(due_mama)} 妈咪）</h2>"
+                f"<table><tr><th>妈咪</th><th class=r>待结C组(MYR)</th></tr>{rrows or '<tr><td colspan=2 class=muted>全部已结</td></tr>'}</table>")
 
-        return page("看板", card(head) + card(wtab) + card(rtab), "home")
+        cash_tracks = (
+            "<h2>现金两轨待清</h2><div class=kpi>"
+            f"<div><div class=n>{col_cnt}</div><div class=l>② 公司代收待发<br>{fmt(col_sum)} 现金</div></div>"
+            f"<div><div class=n>{sk_cnt}</div><div class=l>③ 艺人自留待倒扣<br>{fmt(sk_sum)} 现金</div></div>"
+            "</div><p class=muted style='margin-top:8px'>② 公司已收的现金，待工资发放给艺人/妈咪。"
+            "③ 艺人现场已拿，月底从工资倒扣公司+妈咪份。</p>")
+
+        return page("看板", card(head) + card(rtab) + card(cash_tracks) + card(wtab), "home")
     finally:
         s.close()
 
@@ -249,6 +270,29 @@ MODES = ["标准", "直结", "自单", "全归艺人"]
 FLOWS = ["", "A", "B", "D", "E", "D60"]
 
 
+def credit_cell(o):
+    """挂账态徽章 + 待结↔已结 一键切换。"""
+    cs = o.credit_status
+    if cs in (None, ST.CREDIT_NONE):  return "<span class=muted>—</span>"
+    if cs == ST.CREDIT_DIRECT:        return "<span class='bd dir'>直结</span>"
+    f = f"<form method=post action='/orders/{o.id}/credit_toggle' style='display:inline'>"
+    if cs == ST.CREDIT_PAID:
+        return f"<span class='bd ok'>已结</span> {f}<button class='tg u'>撤</button></form>"
+    return f"<span class='bd due'>{cs}</span> {f}<button class='tg'>标已结</button></form>"
+
+
+def cash_cell(o):
+    """现金态徽章(待/已 + 代收/自留分支) + 一键切换。"""
+    ms = o.cash_status
+    if ms in (None, ST.CASH_NONE):  return "<span class=muted>—</span>"
+    if ms == ST.CASH_DIRECT:        return "<span class='bd dir'>直结</span>"
+    br = ST.cash_branch(o.flow)
+    f = f"<form method=post action='/orders/{o.id}/cash_toggle' style='display:inline'>"
+    if ms == ST.CASH_DONE:
+        return f"<span class='bd ok'>已·{br}</span> {f}<button class='tg u'>撤</button></form>"
+    return f"<span class='bd due'>待·{br}</span> {f}<button class='tg'>标已</button></form>"
+
+
 @app.get("/orders", response_class=HTMLResponse)
 def orders_list(user=Depends(auth), q: str = "", n: int = 60):
     s = get_session()
@@ -272,7 +316,9 @@ def orders_list(user=Depends(auth), q: str = "", n: int = 60):
                     f"<td>{ven.get(o.venue_id, '') } {o.room or ''}</td>"
                     f"<td>{mam.get(o.mama_id, '自单')}</td>"
                     f"<td class=r>{fmt(o.credit_k)}</td><td class=r>{fmt(o.cash_m)}</td>"
-                    f"<td class=r>{fmt(o.ticket_o)}</td><td>{o.mode}</td>"
+                    f"<td class=r>{fmt(o.ticket_o)}</td>"
+                    f"<td>{credit_cell(o)}</td><td>{cash_cell(o)}</td>"
+                    f"<td>{o.mode}</td>"
                     f"<td>{o.customer or '—'}</td>"
                     f"<td><a class=btn href='/orders/{o.id}/edit'>改</a></td></tr>")
         body = (f"<h2>订单（改单 / 作废）</h2>"
@@ -280,7 +326,8 @@ def orders_list(user=Depends(auth), q: str = "", n: int = 60):
                 f"<input name='q' value='{q}' placeholder='搜艺人/妈咪/客人/场所' style='padding:7px;border:1px solid #F4C0D1;border-radius:6px'> "
                 f"<button class='btn'>搜</button></form>"
                 f"<table><tr><th>#</th><th>日期</th><th>艺人</th><th>场所</th><th>妈咪</th>"
-                f"<th class=r>挂账</th><th class=r>现金</th><th class=r>门票</th><th>档</th><th>客人</th><th></th></tr>{trs}</table>")
+                f"<th class=r>挂账</th><th class=r>现金</th><th class=r>门票</th>"
+                f"<th>挂账态</th><th>现金态</th><th>档</th><th>客人</th><th></th></tr>{trs}</table>")
         return page("订单", card(body), "orders")
     finally:
         s.close()
@@ -366,6 +413,12 @@ def order_edit_save(oid: int, user=Depends(auth),
             o.start_time = start_time.strip()[:8]
             o.end_time = end_time.strip()[:8]
             o.remark = remark.strip() or None
+            # 金额/档/流向改了 → 重派生两轨态, 保留已结/已
+            o.credit_status, o.cash_status = ST.derive_status(
+                credit_k=o.credit_k, cash_m=o.cash_m, mode=o.mode, flow=o.flow,
+                credit_paid=(o.credit_status == ST.CREDIT_PAID),
+                cash_settled=(o.cash_status == ST.CASH_DONE),
+                void=(o.status != "已审核"))
             s.add(OperationLog(action="改单", target=f"order#{oid}",
                                detail=f"挂{int(o.credit_k)}/现{int(o.cash_m)}/票{int(o.ticket_o)}/{o.mode}"))
             s.commit()
@@ -382,6 +435,42 @@ def order_void(oid: int, user=Depends(auth)):
         if o:
             o.status = "作废"
             s.add(OperationLog(action="作废单", target=f"order#{oid}"))
+            s.commit()
+    finally:
+        s.close()
+    return RedirectResponse("/orders", status_code=303)
+
+
+@app.post("/orders/{oid}/credit_toggle")
+def credit_toggle(oid: int, user=Depends(auth)):
+    """挂账态 待结/部分 ↔ 已结 切换 (直结/无K 不可切)。"""
+    s = get_session()
+    try:
+        o = s.get(Order, oid)
+        if o and o.credit_status in (ST.CREDIT_DUE, ST.CREDIT_PART, ST.CREDIT_PAID):
+            if o.credit_status == ST.CREDIT_PAID:
+                o.credit_status = ST.CREDIT_DUE; o.credit_paid_date = None
+            else:
+                o.credit_status = ST.CREDIT_PAID; o.credit_paid_date = date.today()
+            s.add(OperationLog(action="挂账结款", target=f"order#{oid}", detail=o.credit_status))
+            s.commit()
+    finally:
+        s.close()
+    return RedirectResponse("/orders", status_code=303)
+
+
+@app.post("/orders/{oid}/cash_toggle")
+def cash_toggle(oid: int, user=Depends(auth)):
+    """现金态 待 ↔ 已 切换 (直结/无M 不可切)。"""
+    s = get_session()
+    try:
+        o = s.get(Order, oid)
+        if o and o.cash_status in (ST.CASH_DUE, ST.CASH_DONE):
+            if o.cash_status == ST.CASH_DONE:
+                o.cash_status = ST.CASH_DUE; o.cash_settle_date = None
+            else:
+                o.cash_status = ST.CASH_DONE; o.cash_settle_date = date.today()
+            s.add(OperationLog(action="现金结算", target=f"order#{oid}", detail=o.cash_status))
             s.commit()
     finally:
         s.close()
