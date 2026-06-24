@@ -68,7 +68,8 @@ td{padding:7px 8px;border-bottom:1px solid #F4C0D1}
 def page(title, body, active=""):
     def lk(href, label, key):
         return f"<a class='{'on' if key == active else ''}' href='{href}'>{label}</a>"
-    nav = (lk("/", "看板", "home") + lk("/review", "审核队列", "review")
+    nav = (lk("/", "看板", "home") + lk("/profit", "利润分红", "profit")
+           + lk("/review", "审核队列", "review")
            + lk("/orders", "订单", "orders") + lk("/upload", "导入数据", "upload"))
     return _BASE.replace("__TITLE__", title).replace("__NAV__", nav).replace("__BODY__", body)
 
@@ -129,6 +130,60 @@ def dashboard(user=Depends(auth)):
         return page("看板", card(head) + card(wtab) + card(rtab), "home")
     finally:
         s.close()
+
+
+# ───────────────────────── 利润 + 分红 ─────────────────────────
+@app.get("/profit", response_class=HTMLResponse)
+def profit_page(user=Depends(auth), year: int = 0, month: int = 0):
+    from ..core.profit import profit_summary
+    s = get_session()
+    try:
+        if not (year and month):
+            last = (s.query(Order).filter(Order.status == "已审核")
+                    .order_by(Order.biz_date.desc()).first())
+            d = last.biz_date if last and last.biz_date else date.today()
+            year, month = d.year, d.month
+        p = profit_summary(s, year, month)
+    finally:
+        s.close()
+
+    def f2(n):
+        return f"{n:,.2f}"
+    sign = lambda n: ("neg" if n < 0 else "")
+
+    py, pm = (year - 1, 12) if month == 1 else (year, month - 1)
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    switch = (f"<p class=muted><a href='/profit?year={py}&month={pm}'>← 上月</a> &nbsp; "
+              f"<b>{year}年{month}月</b> &nbsp; "
+              f"<a href='/profit?year={ny}&month={nm}'>下月 →</a></p>")
+
+    chain = ("<h2>公司利润链（MYR）</h2>" + switch +
+             "<div class=kpi>"
+             f"<div><div class=n>{fmt(p['gross'])}</div><div class=l>公司毛</div></div>"
+             f"<div><div class=n>{fmt(p['lodging'])}</div><div class=l>住宿净</div></div>"
+             f"<div><div class='n neg'>-{fmt(p['commission'])}</div><div class=l>经纪人提成</div></div>"
+             f"<div><div class='n neg'>-{fmt(p['costs'])}</div><div class=l>运营成本</div></div>"
+             f"<div><div class=n>{fmt(p['operating'])}</div><div class=l>经营利润</div></div></div>"
+             "<p class=muted style='margin-top:12px'>"
+             f"经营利润 {f2(p['operating'])} × 结算率 {p['settle_rate']} "
+             f"+ 汇差 {f2(p['spread'])} = <b>总利润 {f2(p['total'])} RMB</b></p>")
+
+    prows = "".join(
+        f"<tr><td>{name}</td><td class=r>{fmt(perf)}</td>"
+        f"<td class='r neg'>-{fmt(p['commission_per'].get(name, 0))}</td></tr>"
+        for name, perf in sorted(p["perf"].items(), key=lambda x: -x[1]))
+    ptab = ("<h2>各经纪人业绩 / 提成</h2><table>"
+            "<tr><th>经纪人</th><th class=r>业绩(工价)</th><th class=r>提成</th></tr>"
+            f"{prows or '<tr><td colspan=3 class=muted>本月无业绩单</td></tr>'}</table>")
+
+    drows = "".join(
+        f"<tr><td>{name}</td><td class='r {sign(v)}'>{f2(v)}</td></tr>"
+        for name, v in sorted(p["dividends"].items(), key=lambda x: -x[1]))
+    dtab = ("<h2>三股东分红（RMB · 按业绩占比全额分）</h2><table>"
+            "<tr><th>股东</th><th class=r>分红(RMB)</th></tr>"
+            f"{drows or '<tr><td colspan=2 class=muted>本月无可分利润</td></tr>'}</table>")
+
+    return page("利润分红", card(chain) + card(ptab) + card(dtab), "profit")
 
 
 # ───────────────────────── 导入数据 ─────────────────────────

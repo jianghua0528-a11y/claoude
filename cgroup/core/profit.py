@@ -12,7 +12,7 @@ C组 利润 + 分红 (宪法 v1.0 · Block I)  ·  profit.py
   · 分红仅三股东(阿星/阿豪/老方), 按各自名下艺人业绩占比**全额分**(非平分);
     老杨(非股东)名下艺人产生的利润也归三股东按业绩比例分。
 """
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 
 def broker_commission(perf_by_broker: Dict, pct_by_broker: Dict) -> Tuple[float, Dict]:
@@ -69,3 +69,39 @@ def performance_by_broker(session, year: int, month: int) -> Dict:
         b = ab.get(o.artist_id)
         perf[b] = perf.get(b, 0.0) + s.wp
     return {b: round(v, 2) for b, v in perf.items()}
+
+
+def profit_summary(session, year: int, month: int, *,
+                   settle_rate: float = 1.65, rates: Optional[dict] = None) -> Dict:
+    """某月利润链 + 分红 + 汇差 全聚合 (看板用)。
+    住宿净收入 / 坏账暂无数据源, 记 0; 运营成本取 Expense 当月合计。"""
+    from ..db.models import Broker, Expense
+    from .fx import monthly_spread, RATES_2026_05
+    rates = rates or RATES_2026_05
+    brokers = {b.id: b for b in session.query(Broker).all()}
+
+    gross = company_gross_from_orders(session, year, month)
+    perf = performance_by_broker(session, year, month)
+    perf_named = {brokers[b].name: v for b, v in perf.items() if b in brokers}
+    pct = {b: brokers[b].pct for b in perf if b in brokers}
+    comm_total, comm_per = broker_commission({b: perf[b] for b in pct}, pct)
+
+    costs = round(sum(e.amount for e in session.query(Expense).all()
+                      if e.spend_date and e.spend_date.year == year
+                      and e.spend_date.month == month), 2)
+    lodging = 0.0
+    op = operating_profit(gross, lodging, comm_total, costs, bad_debt=0.0)
+    spread = monthly_spread(session, year, month, rates)
+    total = total_profit(op, spread, settle_rate)
+
+    share_perf = {b: perf[b] for b in perf if b in brokers and brokers[b].is_shareholder}
+    div = dividends(total, share_perf)
+
+    return dict(
+        year=year, month=month,
+        gross=gross, lodging=lodging, commission=comm_total, costs=costs,
+        operating=op, spread=spread, settle_rate=settle_rate, total=total,
+        perf=perf_named,
+        commission_per={brokers[b].name: v for b, v in comm_per.items()},
+        dividends={brokers[b].name: v for b, v in div.items()},
+    )

@@ -110,3 +110,26 @@ def test_performance_by_broker(db):
     # 无水单不算业绩 → b1 只有标准 3000; b2 自单 2000
     assert perf[db["b1"]] == pytest.approx(3000)
     assert perf[db["b2"]] == pytest.approx(2000)
+
+
+def test_profit_summary(db):
+    from cgroup.core.profit import profit_summary
+    p = profit_summary(db["s"], 2026, 7, settle_rate=1.65)
+    # 公司毛 500; 提成 3000*0.07 + 2000*0.10 = 410; 成本 0
+    assert p["gross"] == pytest.approx(500)
+    assert p["commission"] == pytest.approx(410)
+    # 经营利润 500 - 410 = 90; 总利润 90*1.65 = 148.5
+    assert p["operating"] == pytest.approx(90)
+    assert p["total"] == pytest.approx(148.5)
+    # 仅股东(提成测A)分红, 拿全额
+    assert p["dividends"]["提成测A"] == pytest.approx(148.5)
+    assert "提成测B" not in p["dividends"]      # 非股东不分
+
+
+def test_profit_web_page(db):
+    from starlette.testclient import TestClient
+    from cgroup.web.app import app
+    c = TestClient(app)
+    r = c.get("/profit?year=2026&month=7", auth=("admin", "t"))
+    assert r.status_code == 200
+    assert "公司利润链" in r.text and "总利润" in r.text
