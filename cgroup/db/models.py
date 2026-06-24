@@ -164,7 +164,18 @@ class Expense(Base):                      # 运营成本 / 支出
     notes: Mapped[Optional[str]] = mapped_column(Text)
 
 
-class ExchangeRate(Base):                 # 汇率 (真实率/结算率双轨)
+class Fx(Base):                           # 换汇流水 (Block E 汇差来源, 次月发薪时实记)
+    __tablename__ = "fx_flows"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fx_date: Mapped[date] = mapped_column(Date)
+    out_ccy: Mapped[str] = mapped_column(String(6))        # 换出外币 MYR/USDT
+    out_amount: Mapped[float] = mapped_column(Float)        # 换出金额
+    in_rmb: Mapped[float] = mapped_column(Float)            # 实收 RMB (真实率藏在 in_rmb/out_amount)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ExchangeRate(Base):                 # 结算率配置 (对艺人记账用; 真实率不在此表, 见 Fx)
     __tablename__ = "exchange_rates"
     id: Mapped[int] = mapped_column(primary_key=True)
     rate_date: Mapped[date] = mapped_column(Date)
