@@ -299,8 +299,8 @@ def health():
 from fastapi import Form
 from datetime import datetime as _dt
 
-MODES = ["标准", "直结", "自单", "全归艺人"]
-FLOWS = ["", "A", "B", "D", "E", "D60"]
+MODES = ["标准", "无水单", "代收无水", "自单", "自定义"]
+FLOWS = ["", "A", "B", "D", "E"]
 
 
 @app.get("/orders", response_class=HTMLResponse)
@@ -326,7 +326,7 @@ def orders_list(user=Depends(auth), q: str = "", n: int = 60):
                     f"<td>{ven.get(o.venue_id, '') } {o.room or ''}</td>"
                     f"<td>{mam.get(o.mama_id, '自单')}</td>"
                     f"<td class=r>{fmt(o.credit_k)}</td><td class=r>{fmt(o.cash_m)}</td>"
-                    f"<td class=r>{fmt(o.ticket_o)}</td><td>{o.mode}</td>"
+                    f"<td class=r>{fmt(o.ticket_o)}</td><td>{o.preset}</td>"
                     f"<td>{o.customer or '—'}</td>"
                     f"<td><a class=btn href='/orders/{o.id}/edit'>改</a></td></tr>")
         body = (f"<h2>订单（改单 / 作废）</h2>"
@@ -370,7 +370,9 @@ def order_edit_form(oid: int, user=Depends(auth)):
             + row("场所", _inp("venue", ven.get(o.venue_id, '')))
             + row("包厢", _inp("room", o.room))
             + row("妈咪", _inp("mama", mam.get(o.mama_id, '')) + " <span style='color:#888;font-size:12px'>(留空=自单)</span>")
-            + row("分成档", _sel("mode", MODES, o.mode))
+            + row("分成预设", _sel("preset", MODES, o.preset))
+            + row("自定义比例", _inp("cust_a", o.cust_a, "艺") + " " + _inp("cust_m", o.cust_m, "妈")
+                  + " " + _inp("cust_c", o.cust_c, "公") + " <span style='color:#888;font-size:12px'>(仅自定义档填)</span>")
             + row("现金流向", _sel("flow", FLOWS, o.flow or ''))
             + row("挂账 K", _inp("credit_k", int(o.credit_k or 0)))
             + row("现金 M", _inp("cash_m", int(o.cash_m or 0)))
@@ -392,7 +394,8 @@ def order_edit_form(oid: int, user=Depends(auth)):
 @app.post("/orders/{oid}/edit")
 def order_edit_save(oid: int, user=Depends(auth),
                     biz_date: str = Form(""), artist: str = Form(""), venue: str = Form(""),
-                    room: str = Form(""), mama: str = Form(""), mode: str = Form("标准"),
+                    room: str = Form(""), mama: str = Form(""), preset: str = Form("标准"),
+                    cust_a: str = Form(""), cust_m: str = Form(""), cust_c: str = Form(""),
                     flow: str = Form(""), credit_k: float = Form(0), cash_m: float = Form(0),
                     ticket_o: float = Form(0), customer: str = Form(""),
                     start_time: str = Form(""), end_time: str = Form(""), remark: str = Form("")):
@@ -411,7 +414,16 @@ def order_edit_save(oid: int, user=Depends(auth),
             if v: o.venue_id = v.id
             o.mama_id = m.id if m else None
             o.room = room.strip() or None
-            o.mode = mode if mode in MODES else o.mode
+            o.preset = preset if preset in MODES else o.preset
+            if o.preset == "自定义":
+                def _f(x):
+                    try:
+                        return float(x) if str(x).strip() else None
+                    except ValueError:
+                        return None
+                o.cust_a, o.cust_m, o.cust_c = _f(cust_a), _f(cust_m), _f(cust_c)
+            else:
+                o.cust_a = o.cust_m = o.cust_c = None
             o.flow = flow.strip() or None
             o.credit_k = credit_k or 0
             o.cash_m = cash_m or 0
@@ -421,7 +433,7 @@ def order_edit_save(oid: int, user=Depends(auth),
             o.end_time = end_time.strip()[:8]
             o.remark = remark.strip() or None
             s.add(OperationLog(action="改单", target=f"order#{oid}",
-                               detail=f"挂{int(o.credit_k)}/现{int(o.cash_m)}/票{int(o.ticket_o)}/{o.mode}"))
+                               detail=f"挂{int(o.credit_k)}/现{int(o.cash_m)}/票{int(o.ticket_o)}/{o.preset}"))
             s.commit()
     finally:
         s.close()

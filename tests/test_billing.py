@@ -47,9 +47,9 @@ def setup():
     s.add_all([art, mama, ven]); s.flush()
     # 两张标准挂账单: K=3000,O=200,wp=3000 → 每张妈咪应收 (3200-600)=2600
     o1 = Order(biz_date=D, artist_id=art.id, venue_id=ven.id, mama_id=mama.id,
-               mode="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核")
+               preset="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核")
     o2 = Order(biz_date=D, artist_id=art.id, venue_id=ven.id, mama_id=mama.id,
-               mode="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核")
+               preset="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核")
     s.add_all([o1, o2]); s.flush()
     assign_order_id(s, o1)
     assign_order_id(s, o2)

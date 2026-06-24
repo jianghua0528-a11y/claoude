@@ -92,9 +92,12 @@ class Order(Base):
     room: Mapped[Optional[str]] = mapped_column(String(40))
     booker: Mapped[Optional[str]] = mapped_column(String(50))  # 预约人/助理 (F列)
     mama_id: Mapped[Optional[int]] = mapped_column(ForeignKey("mamas.id"))  # 空=自单
-    # 分成档: 每单直接定 (标准/直结/自单/全归艺人)
-    mode: Mapped[str] = mapped_column(String(10), default="标准")
-    flow: Mapped[Optional[str]] = mapped_column(String(4))     # 现金流向 A/B/D/E/D60
+    # 分成预设 (Block A): 标准/无水单/代收无水/自单/自定义; on_company_books 由 preset 唯一决定
+    preset: Mapped[str] = mapped_column(String(10), default="标准")
+    cust_a: Mapped[Optional[float]] = mapped_column(Float)     # 仅"自定义"档: 艺/妈/公比例
+    cust_m: Mapped[Optional[float]] = mapped_column(Float)
+    cust_c: Mapped[Optional[float]] = mapped_column(Float)
+    flow: Mapped[Optional[str]] = mapped_column(String(4))     # 现金流向 A/B/D/E
     # 金额
     credit_k: Mapped[float] = mapped_column(Float, default=0.0)   # 挂账
     cash_m: Mapped[float] = mapped_column(Float, default=0.0)     # 现金

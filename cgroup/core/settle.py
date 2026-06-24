@@ -201,29 +201,18 @@ def verify_closure(orders) -> dict:
                 diff=diff, ok=abs(diff) < 1e-6)
 
 
-# ─────────────────────── DB Order 适配 (切换期) ───────────────────────
-# 旧 DB Order 用 `mode`(分成档) 存; 宪法用 preset + on_books。映射规则:
-_MODE_TO_PRESET = {
-    "标准": ("标准", None),
-    "自单": ("自单", None),
-    "直结": ("无水单", None),                  # 旧"直结"(70/30/0,妈咪直结不进公司账) = 宪法 无水单(表外)
-    "全归艺人": ("自定义", (1.0, 0.0, 0.0)),   # 旧"全归艺人"(100/0/0) = 自定义
-}
-
-
+# ─────────────────────── DB Order 适配 ───────────────────────
 def order_from_db(o) -> "Order":
-    """DB Order(duck-typed: credit_k/cash_m/ticket_o/mode/flow/wp) → 宪法 settle.Order。
-    order_type 由 K/M 推断; mode 映射到 preset。legacy D60 会在 settle() 内显式报错。"""
+    """DB Order(duck-typed: credit_k/cash_m/ticket_o/preset/cust_a/m/c/flow/wp) → 宪法 settle.Order。
+    order_type 由 K/M 推断; preset 直读 (自定义档用 cust_a/m/c)。"""
     K = (o.credit_k or 0.0)
     M = (o.cash_m or 0.0)
     Ot = (o.ticket_o or 0.0)
     order_type = "混合" if (K > 0 and M > 0) else ("现金" if M > 0 else "挂账")
-    preset, amc = _MODE_TO_PRESET.get(o.mode, (o.mode, None))
-    a = m = c = None
-    if amc:
-        a, m, c = amc
     return Order(order_type=order_type, K=K, M=M, O=Ot, wp=o.wp,
-                 preset=preset, a=a, m=m, c=c, flow=o.flow)
+                 preset=getattr(o, "preset", None) or "标准",
+                 a=getattr(o, "cust_a", None), m=getattr(o, "cust_m", None),
+                 c=getattr(o, "cust_c", None), flow=o.flow)
 
 
 def settle_db(o) -> "Settlement":

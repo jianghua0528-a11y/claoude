@@ -88,12 +88,12 @@ def db():
     D = date(2026, 7, 10)
     s.add_all([
         # a1: 标准挂账 wp=3000 (业绩, 公司净300); 无水单 wp=5000 (不算业绩/不进公司毛)
-        Order(biz_date=D, artist_id=a1.id, venue_id=ven.id, mode="标准",
+        Order(biz_date=D, artist_id=a1.id, venue_id=ven.id, preset="标准",
               credit_k=3000, wp=3000, status="已审核"),
-        Order(biz_date=D, artist_id=a1.id, venue_id=ven.id, mode="直结",
+        Order(biz_date=D, artist_id=a1.id, venue_id=ven.id, preset="无水单",
               credit_k=5000, wp=5000, status="已审核"),
         # a2: 自单 wp=2000 (业绩, 公司净200)
-        Order(biz_date=D, artist_id=a2.id, venue_id=ven.id, mode="自单",
+        Order(biz_date=D, artist_id=a2.id, venue_id=ven.id, preset="自单",
               cash_m=2000, wp=2000, flow="A", status="已审核"),
     ])
     s.commit()

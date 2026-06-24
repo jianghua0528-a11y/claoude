@@ -9,8 +9,8 @@ from .workdate import attribute_date
 from .pricing import work_hours, standard_base, TIER_PRICE
 from .directory import resolve_mama
 
-# 适用工时反推校验的分成档 (标准平单口径; 自单/全归艺人不反推)
-_RECON_MODES = {"标准", "代收无水", "无水单", "直结"}
+# 适用工时反推校验的分成预设 (标准平单口径; 自单/自定义不反推)
+_RECON_MODES = {"标准", "代收无水", "无水单"}
 _TIER_PRICES = {v for v in TIER_PRICE.values() if v is not None}
 
 

@@ -24,39 +24,41 @@ def db():
     mama = Mama(name="小宝")
     ven = Venue(name="名门", default_ticket=200)
     s.add_all([art, mama, ven]); s.flush()
-    # 四类单, 同艺人; 前三单挂 mama, 全归艺人单无 mama
+    # 四类单, 同艺人; 前三单挂 mama, 自定义单无 mama
     s.add_all([
         Order(biz_date=DAY, artist_id=art.id, venue_id=ven.id, mama_id=mama.id,
-              mode="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核"),
+              preset="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核"),
         Order(biz_date=DAY, artist_id=art.id, venue_id=ven.id, mama_id=mama.id,
-              mode="标准", cash_m=3000, wp=3000, flow="B", status="已审核"),
+              preset="标准", cash_m=3000, wp=3000, flow="B", status="已审核"),
         Order(biz_date=DAY, artist_id=art.id, venue_id=ven.id, mama_id=mama.id,
-              mode="直结", credit_k=2000, wp=2000, status="已审核"),   # → 无水单(表外)
+              preset="无水单", credit_k=2000, wp=2000, status="已审核"),   # 表外
         Order(biz_date=DAY, artist_id=art.id, venue_id=ven.id,
-              mode="全归艺人", credit_k=1000, wp=1000, status="已审核"),  # → 自定义 100/0/0
+              preset="自定义", cust_a=1.0, cust_m=0.0, cust_c=0.0,
+              credit_k=1000, wp=1000, status="已审核"),                   # 全归艺人 100/0/0
     ])
     s.commit()
     return dict(session=s, art=art.id, mama=mama.id)
 
 
-def test_adapter_maps_legacy_modes(db):
-    """旧 mode 经 settle_db 正确映射到宪法口径。"""
+def test_preset_settles_per_constitution(db):
+    """DB preset 经 settle_db 出宪法口径。(查询限定本模块 biz_date 防共享库串扰)"""
     s = db["session"]
-    by_mode = {o.mode: o for o in s.query(Order).all()}
+
+    def one(**filt):
+        return s.query(Order).filter_by(biz_date=DAY, **filt).first()
+
     # 标准挂账: 应发 0.7*3000+200=2300; 妈咪应结 3200-600=2600; 公司净 300
-    r = settle_db(by_mode["标准"] if False else
-                  s.query(Order).filter_by(mode="标准", credit_k=3000).first())
+    r = settle_db(one(preset="标准", credit_k=3000))
     assert r.artist_month_end == pytest.approx(2300)
     assert r.mama_receivable == pytest.approx(2600)
     assert r.company_net == pytest.approx(300)
-    # 直结 → 无水单(表外): 实操全 0, 经济净仍在
-    rd = settle_db(by_mode["直结"])
-    assert rd.is_direct_settle is True
-    assert rd.on_books is False
+    # 无水单(表外): 实操全 0, 经济净仍在
+    rd = settle_db(one(preset="无水单"))
+    assert rd.is_direct_settle is True and rd.on_books is False
     assert rd.artist_month_end == 0 and rd.mama_receivable == 0
     assert rd.artist_net == pytest.approx(0.7 * 2000)
-    # 全归艺人 → 自定义 100/0/0
-    rg = settle_db(by_mode["全归艺人"])
+    # 自定义 100/0/0
+    rg = settle_db(one(preset="自定义"))
     assert rg.artist_month_end == pytest.approx(1000)
     assert rg.company_net == 0
 
