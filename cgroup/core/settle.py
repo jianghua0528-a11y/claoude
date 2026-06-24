@@ -71,6 +71,23 @@ class Settlement:
     # ── 标记 ──
     needs_review: Optional[str] = None
 
+    # ── 兼容别名 (切换期: 旧 settlement.Result 的字段名映射到宪法口径) ──
+    @property
+    def artist_month_end(self) -> float:      # 旧名: 月底应结 → 工资单本单金额
+        return self.artist_payroll
+
+    @property
+    def mama_receivable(self) -> float:       # 旧名: 挂账单妈咪应结公司
+        return self.mama_owes_company
+
+    @property
+    def mama_rebate(self) -> float:           # 旧名: 现金单反水
+        return self.rebate
+
+    @property
+    def is_direct_settle(self) -> bool:       # 旧名: 直结(妈咪直结不进公司账) = 表外
+        return not self.on_books
+
 
 def _ratios(o: "Order"):
     """取 (a, m, c, on_books); 校验 a+m+c==1。"""
@@ -101,6 +118,11 @@ def settle(o: "Order") -> "Settlement":
     s.artist_net = a * wp + O
     s.mama_net = m * wp
     s.company_net = c * wp
+
+    # ── 无水单(表外): 妈咪直付艺人, 公司不经手 → 实操字段全 0, 仅留经济口径 ──
+    if not on_books:
+        s.O_to_salary = True            # 门票归艺人(随妈咪直付), 不经公司发薪
+        return s
 
     # ── 挂账单: 妈咪向客人收 (K+O), 自留 m*wp, 余结公司; 公司发薪给艺人 (含门票) ──
     if o.order_type == "挂账":
@@ -177,3 +199,33 @@ def verify_closure(orders) -> dict:
     return dict(total_in=round(total_in, 6), artist=round(a, 6), mama=round(m, 6),
                 company=round(c, 6), total_out=round(total_out, 6),
                 diff=diff, ok=abs(diff) < 1e-6)
+
+
+# ─────────────────────── DB Order 适配 (切换期) ───────────────────────
+# 旧 DB Order 用 `mode`(分成档) 存; 宪法用 preset + on_books。映射规则:
+_MODE_TO_PRESET = {
+    "标准": ("标准", None),
+    "自单": ("自单", None),
+    "直结": ("无水单", None),                  # 旧"直结"(70/30/0,妈咪直结不进公司账) = 宪法 无水单(表外)
+    "全归艺人": ("自定义", (1.0, 0.0, 0.0)),   # 旧"全归艺人"(100/0/0) = 自定义
+}
+
+
+def order_from_db(o) -> "Order":
+    """DB Order(duck-typed: credit_k/cash_m/ticket_o/mode/flow/wp) → 宪法 settle.Order。
+    order_type 由 K/M 推断; mode 映射到 preset。legacy D60 会在 settle() 内显式报错。"""
+    K = (o.credit_k or 0.0)
+    M = (o.cash_m or 0.0)
+    Ot = (o.ticket_o or 0.0)
+    order_type = "混合" if (K > 0 and M > 0) else ("现金" if M > 0 else "挂账")
+    preset, amc = _MODE_TO_PRESET.get(o.mode, (o.mode, None))
+    a = m = c = None
+    if amc:
+        a, m, c = amc
+    return Order(order_type=order_type, K=K, M=M, O=Ot, wp=o.wp,
+                 preset=preset, a=a, m=m, c=c, flow=o.flow)
+
+
+def settle_db(o) -> "Settlement":
+    """DB Order 直接结算 (适配 + settle 一步到位)。"""
+    return settle(order_from_db(o))

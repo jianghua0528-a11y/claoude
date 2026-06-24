@@ -3,7 +3,7 @@ C组 数据库结构  ·  models.py   (SQLAlchemy 2.0)
 PostgreSQL (Railway 线上) / SQLite (本地开发) 通用 —— 由 DATABASE_URL 切换。
 
 数据底座: 字典(经纪人/艺人/妈咪/助理/场所) + 报单 + 审核队列 + 业务流水。
-报单的结算值(应得/月底应结/反水...)不存表, 由 core.settlement 即时算, 单一真相源。
+报单的结算值(应得/月底应结/反水...)不存表, 由 core.settle 即时算, 单一真相源。
 """
 from datetime import datetime, date
 from typing import Optional

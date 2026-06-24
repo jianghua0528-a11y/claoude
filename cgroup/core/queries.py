@@ -1,11 +1,11 @@
 """
 业务查询聚合  ·  queries.py
-机器人命令 + 网页看板共用。全部经 settlement 引擎算。
+机器人命令 + 网页看板共用。全部经 settle 引擎(宪法 v1.0)算。
 """
 from datetime import date
 
 from ..db.models import Order, Artist, Mama
-from .settlement import Order as EO, compute
+from .settle import settle_db
 
 
 def _orders(session, **filt):
@@ -24,8 +24,7 @@ def artist_summary(session, artist_id, year, month):
     for o in _orders(session, artist_id=artist_id):
         if not (o.biz_date and o.biz_date.year == year and o.biz_date.month == month):
             continue
-        r = compute(EO(K=o.credit_k, M=o.cash_m, O=o.ticket_o,
-                       mode=o.mode, flow=o.flow, wp=o.wp))
+        r = settle_db(o)
         perf += o.credit_k + o.cash_m
         tickets += o.ticket_o
         wage += r.artist_month_end
@@ -42,8 +41,7 @@ def mama_summary(session, mama_id, start=None, end=None):
             continue
         if end and (not o.biz_date or o.biz_date > end):
             continue
-        r = compute(EO(K=o.credit_k, M=o.cash_m, O=o.ticket_o,
-                       mode=o.mode, flow=o.flow, wp=o.wp))
+        r = settle_db(o)
         K += o.credit_k
         O += o.ticket_o
         recv += r.mama_receivable - r.mama_rebate

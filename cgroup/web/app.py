@@ -17,7 +17,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from ..db.session import get_session, init_db
 from ..db.models import Order, Artist, Mama, Venue, ReviewItem, OperationLog
-from ..core.settlement import Order as EOrder, compute
+from ..core.settle import settle_db
 
 app = FastAPI(title="C组审核后台")
 security = HTTPBasic()
@@ -92,8 +92,7 @@ def dashboard(user=Depends(auth)):
         SK = SM = SO = a = m = c = 0.0
         wages, recv = {}, {}
         for o in orders:
-            r = compute(EOrder(K=o.credit_k, M=o.cash_m, O=o.ticket_o,
-                               mode=o.mode, flow=o.flow, wp=o.wp))
+            r = settle_db(o)
             SK += o.credit_k; SM += o.cash_m; SO += o.ticket_o
             a += r.artist_net; m += r.mama_net; c += r.company_net
             if o.artist_id:

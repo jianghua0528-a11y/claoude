@@ -5,7 +5,7 @@
 from datetime import date
 
 from ..db.models import Order, Artist, Venue, Mama
-from ..core.settlement import Order as EO, compute
+from ..core.settle import settle_db
 from . import render
 
 WEEK = "一二三四五六日"
@@ -39,7 +39,7 @@ def mama_statement_png(session, mama_id, start=None, end=None, period_label="对
             continue
         if end and (not o.biz_date or o.biz_date > end):
             continue
-        r = compute(EO(K=o.credit_k, M=o.cash_m, O=o.ticket_o, mode=o.mode, flow=o.flow, wp=o.wp))
+        r = settle_db(o)
         dd = o.biz_date.strftime("%m/%d") if o.biz_date else "?"
         if o.credit_k > 0:
             k_rows.append(dict(日期=dd, 艺人=art.get(o.artist_id, "?"), 场所=ven.get(o.venue_id, ""),
@@ -62,9 +62,9 @@ def artist_payslip_png(session, artist_id, year, month):
               .order_by(Order.biz_date).all()):
         if not (o.biz_date and o.biz_date.year == year and o.biz_date.month == month):
             continue
-        r = compute(EO(K=o.credit_k, M=o.cash_m, O=o.ticket_o, mode=o.mode, flow=o.flow, wp=o.wp))
+        r = settle_db(o)
         dd = o.biz_date.strftime("%m/%d")
-        if o.mode == "直结":
+        if r.is_direct_settle:
             direct.append(dict(日期=dd, 场所=ven.get(o.venue_id, ""), 包厢=o.room,
                                妈咪=mam.get(o.mama_id, ""), K=o.credit_k))
             continue
