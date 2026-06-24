@@ -17,6 +17,21 @@ class Base(DeclarativeBase):
 
 
 # ─────────────────────── 字典层 ───────────────────────
+class MasterData(Base):                   # 统一基础资料表 (Block J): 人/地主数据源
+    __tablename__ = "master_data"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str] = mapped_column(String(10))         # 艺人/主妈咪/助理/经纪人/场所
+    name: Mapped[str] = mapped_column(String(50))         # 主名(系统认这个)
+    aliases: Mapped[Optional[str]] = mapped_column(String(200))   # 逗号分隔; 错名不收
+    linked_to: Mapped[Optional[int]] = mapped_column(ForeignKey("master_data.id"))  # 艺人→经纪人; 助理→主妈咪
+    commission_pct: Mapped[Optional[float]] = mapped_column(Float)   # 仅经纪人
+    is_shareholder: Mapped[Optional[bool]] = mapped_column(Boolean)  # 仅经纪人
+    default_ticket: Mapped[Optional[float]] = mapped_column(Float)   # 仅场所
+    rooms: Mapped[Optional[str]] = mapped_column(Text)              # 仅场所
+    disambig: Mapped[Optional[str]] = mapped_column(String(50))     # 同名消歧标签, 录单弹此
+    status: Mapped[str] = mapped_column(String(6), default="在用")   # 在用/停用(停用不删行)
+
+
 class Broker(Base):                       # 经纪人 / 合伙人
     __tablename__ = "brokers"
     id: Mapped[int] = mapped_column(primary_key=True)
