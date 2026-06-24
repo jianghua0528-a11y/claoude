@@ -3,22 +3,12 @@
 证明 DB建单 → core.queries 聚合 → web 看板 整条链路已走宪法版 settle 引擎,
 且旧 mode(直结/全归艺人) 经适配器正确映射。
 """
-import os
-import tempfile
+import pytest
 
-# 必须在导入任何 cgroup.db 模块前指定独立测试库
-_DB = os.path.join(tempfile.gettempdir(), "cgroup_test_switch.db")
-if os.path.exists(_DB):
-    os.remove(_DB)
-os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
-os.environ.setdefault("ADMIN_PASSWORD", "t")
-
-import pytest  # noqa: E402
-
-from cgroup.db.session import init_db, get_session  # noqa: E402
-from cgroup.db.models import Broker, Artist, Mama, Venue, Order  # noqa: E402
-from cgroup.core import queries  # noqa: E402
-from cgroup.core.settle import settle_db  # noqa: E402
+from cgroup.db.session import init_db, get_session
+from cgroup.db.models import Broker, Artist, Mama, Venue, Order
+from cgroup.core import queries
+from cgroup.core.settle import settle_db
 
 YEAR, MONTH = 2026, 6
 DAY = __import__("datetime").date(YEAR, MONTH, 15)

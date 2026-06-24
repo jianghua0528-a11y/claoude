@@ -69,6 +69,7 @@ class Venue(Base):                        # 场所
 class Order(Base):
     __tablename__ = "orders"
     id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[Optional[str]] = mapped_column(String(8), unique=True, index=True)  # YYMMDDNN 业务主键(Block G)
     seq: Mapped[Optional[int]] = mapped_column(Integer)        # 业务序号(可断号)
     biz_date: Mapped[date] = mapped_column(Date)              # 归属日期(12点边界)
     artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id"))
@@ -94,6 +95,7 @@ class Order(Base):
     end_time: Mapped[Optional[str]] = mapped_column(String(8))
     remark: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(10), default="已审核")  # 已审核/作废
+    settle_status: Mapped[str] = mapped_column(String(6), default="待结")  # 待结/已结(Block G 单笔级)
     source_msg_id: Mapped[Optional[str]] = mapped_column(String(60))  # 溯源到群消息
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -114,7 +116,19 @@ class ReviewItem(Base):
 
 
 # ─────────────────────── 业务流水层 ───────────────────────
-class MamaSettlement(Base):               # 妈咪结款
+class Payment(Base):                      # 收款流水 (Block G 单一真相源)
+    __tablename__ = "payments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pay_date: Mapped[date] = mapped_column(Date)
+    mama_id: Mapped[Optional[int]] = mapped_column(ForeignKey("mamas.id"))
+    amount: Mapped[float] = mapped_column(Float)
+    currency: Mapped[str] = mapped_column(String(6), default="MYR")
+    covers: Mapped[Optional[str]] = mapped_column(Text)   # 逗号分隔 order_id (这笔收款冲哪几张工单)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class MamaSettlement(Base):               # 妈咪结款 (旧表, 渐被 Payment 取代)
     __tablename__ = "mama_settlements"
     id: Mapped[int] = mapped_column(primary_key=True)
     mama_id: Mapped[int] = mapped_column(ForeignKey("mamas.id"))
