@@ -91,3 +91,28 @@ def load_entries(session) -> List[Entry]:
                          linked_to=name_by_id.get(m.linked_to),
                          status=m.status or "在用"))
     return out
+
+
+def _split(s) -> tuple:
+    return tuple(x.strip() for x in (s or "").split(",") if x.strip())
+
+
+def entries_from_legacy(session) -> List[Entry]:
+    """把现有分表(Broker/Artist/Mama/MamaAssistant/Venue) 投影成 Entry 列表。
+    切换期桥接: 让认人在当前数据上即时可用, 无需先迁移 master_data。"""
+    from ..db.models import Broker, Artist, Mama, MamaAssistant, Venue
+    out: List[Entry] = []
+    bro = {b.id: b.name for b in session.query(Broker).all()}
+    for name in bro.values():
+        out.append(Entry(name, "经纪人"))
+    for a in session.query(Artist).all():
+        out.append(Entry(a.name, "艺人", aliases=_split(a.aliases),
+                         linked_to=bro.get(a.broker_id)))
+    mama = {m.id: m.name for m in session.query(Mama).all()}
+    for m in session.query(Mama).all():
+        out.append(Entry(m.name, "主妈咪", aliases=_split(m.aliases)))
+    for asst in session.query(MamaAssistant).all():
+        out.append(Entry(asst.name, "助理", linked_to=mama.get(asst.mama_id)))
+    for v in session.query(Venue).all():
+        out.append(Entry(v.name, "场所", aliases=_split(v.aliases)))
+    return out

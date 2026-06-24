@@ -10,6 +10,8 @@ import re
 from anthropic import Anthropic
 
 from ..db.models import Mama, MamaAssistant, Artist, Venue, ReviewItem
+from ..core.directory import entries_from_legacy
+from ..core.enrich import enrich_order
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
@@ -121,9 +123,12 @@ def parse_reports(raw_text, session):
         return {"orders": [], "open_shifts": [], "dropped": 0, "_parse_error": text[:500]}
 
 
-def ingest(raw_text, source_group, session, tg_msg_id=None, tg_sender=None):
-    """解析 + 把每单写进审核队列(待审)。返回 [(review_id, payload, warnings), ...] 供机器人发按钮。"""
+def ingest(raw_text, source_group, session, tg_msg_id=None, tg_sender=None, msg_date=None):
+    """解析 + 确定性校验(Block D/F/J) + 写审核队列(待审)。
+    msg_date: 群消息时间戳的日期, 用于日期归属(Block D)。
+    返回 [(review_id, payload, warnings), ...] 供机器人发按钮。"""
     data = parse_reports(raw_text, session)
+    entries = entries_from_legacy(session)
     items = []
     for o in data.get("orders", []):
         # 字段对齐审核确认接口期望的中文键
@@ -134,7 +139,9 @@ def ingest(raw_text, source_group, session, tg_msg_id=None, tg_sender=None):
             "O": o.get("O", 0), "流向": o.get("flow"), "上班": o.get("start"),
             "下班": o.get("end"), "日期": o.get("biz_date"), "备注": o.get("备注", ""),
         }
-        warn = " / ".join(o.get("warnings", [])) or None
+        # 确定性引擎补全/校验, 合并 LLM warnings + 引擎 warnings
+        payload, det_warn = enrich_order(payload, msg_date=msg_date, entries=entries)
+        warn = " / ".join([*o.get("warnings", []), *det_warn]) or None
         ri = ReviewItem(
             source_group=source_group, raw_message=raw_text[:2000],
             parsed_json=json.dumps(payload, ensure_ascii=False),

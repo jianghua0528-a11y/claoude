@@ -64,7 +64,8 @@ async def on_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         items = ingest(text, "报单群", s,
                        tg_msg_id=msg.message_id,
-                       tg_sender=msg.from_user.full_name if msg.from_user else None)
+                       tg_sender=msg.from_user.full_name if msg.from_user else None,
+                       msg_date=msg.date.date() if msg.date else None)
     except Exception as e:
         log.exception("解析失败")
         s2 = get_session()
