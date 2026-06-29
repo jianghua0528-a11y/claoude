@@ -48,4 +48,7 @@ def create_order_from_payload(d, session, source_msg_id=None):
         end_time=str(d.get("下班") or "")[:8],
         remark=d.get("备注"), status="已审核", source_msg_id=source_msg_id)
     session.add(o)
+    # Block G: 建单即分配 YYMMDDNN 工单主键 (单一真相源对齐键)
+    from .billing import assign_order_id
+    assign_order_id(session, o)
     return o

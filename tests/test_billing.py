@@ -107,3 +107,20 @@ def test_apply_payment_overpay_flags(setup):
     pay = Payment(pay_date=D, mama_id=setup["mama"], amount=9000, currency="MYR")
     res = apply_payment(s, pay, [setup["o1"]])   # 应收 2600, 收 9000
     assert res.flag is not None and "应收" in res.flag
+
+
+def test_create_order_assigns_order_id():
+    """录单确认即分配 YYMMDDNN 工单主键 (Block G 接线)。"""
+    from cgroup.core.intake import create_order_from_payload
+    from cgroup.db.session import init_db, get_session
+    init_db()
+    s = get_session()
+    s.add(Artist(name="录单艺人G"))
+    s.commit()
+    payload = {"艺人": "录单艺人G", "场所": None, "妈咪": None, "合作模式": "标准",
+               "K": 3000, "M": 0, "O": 0, "日期": "2026-08-15"}
+    o = create_order_from_payload(payload, s)
+    s.commit()
+    assert o.order_id is not None
+    assert o.order_id.startswith("260815")        # YYMMDD
+    assert o.settle_status == "待结"               # 默认待结
