@@ -156,6 +156,13 @@ def _fmt(n):
     return f"{n:,.0f}"
 
 
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
 async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """私聊路由: 我是 / 我的 / 今日 / 艺人 / 妈咪 / 催账 (支持带不带 / )。"""
     from ..db.session import get_session
@@ -312,8 +319,117 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg)
             return
 
+        # ── 利润 / 分红 ──
+        if cmd in ("利润", "分红"):
+            from ..core.profit import profit_summary
+            y, mo = date.today().year, date.today().month
+            ar = re.match(r"(\d{4})-(\d{1,2})", arg) if arg else None
+            if ar:
+                y, mo = int(ar.group(1)), int(ar.group(2))
+            p = profit_summary(s, y, mo)
+            div = "\n".join(f"  {n} {_fmt(v)}"
+                            for n, v in sorted(p["dividends"].items(), key=lambda x: -x[1]))
+            await update.message.reply_text(
+                f"💰 {y}年{mo}月 利润\n公司毛 {_fmt(p['gross'])}\n住宿 {_fmt(p['lodging'])}\n"
+                f"经纪人提成 -{_fmt(p['commission'])}\n运营成本 -{_fmt(p['costs'])}\n"
+                f"经营利润 {_fmt(p['operating'])}\n汇差 {_fmt(p['spread'])}\n"
+                f"总利润 {_fmt(p['total'])} RMB\n— 分红(RMB) —\n{div or '  无'}")
+            return
+
+        # ── 待结挂账列表 ──
+        if cmd in ("待结", "未结"):
+            from ..db.models import Order
+            from ..core.billing import order_receivable
+            q = s.query(Order).filter(Order.status == "已审核",
+                                      Order.settle_status == "待结", Order.credit_k > 0)
+            if arg:
+                mama = s.query(Mama).filter_by(name=arg).first()
+                if mama:
+                    q = q.filter(Order.mama_id == mama.id)
+            rows = q.order_by(Order.biz_date).all()[:30]
+            if not rows:
+                await update.message.reply_text("没有待结挂账单。")
+                return
+            mam = {x.id: x.name for x in s.query(Mama).all()}
+            lines = [f"{o.order_id or '—'} {mam.get(o.mama_id, '')} 应收{_fmt(order_receivable(o))}"
+                     for o in rows]
+            await update.message.reply_text("📋 待结挂账（工单号 妈咪 应收C组）:\n" + "\n".join(lines))
+            return
+
+        # ── 结款: 结款 妈咪 金额 工单号… ──
+        if cmd in ("结款", "收款"):
+            sub = arg.split()
+            if len(sub) < 3:
+                await update.message.reply_text(
+                    "用法：结款 妈咪名 金额 工单号1 工单号2…\n例：结款 小宝 5200 26052001 26052002")
+                return
+            from ..db.models import Payment
+            from ..core.billing import apply_payment
+            mama = s.query(Mama).filter_by(name=sub[0]).first()
+            amount = _num(sub[1]) or 0.0
+            pay = Payment(pay_date=date.today(), mama_id=mama.id if mama else None, amount=amount)
+            res = apply_payment(s, pay, sub[2:])
+            s.commit()
+            await update.message.reply_text(
+                res.flag or f"✅ 已结 {len(res.marked)} 单，收款 {_fmt(amount)}（应收 {_fmt(res.expected)}）")
+            return
+
+        # ── 财务录入: 成本 / 住宿 / 坏账 / 换汇 ──
+        if cmd in ("成本", "支出"):
+            sub = arg.split()
+            amt = _num(sub[-1]) if len(sub) >= 2 else None
+            if amt is None:
+                await update.message.reply_text("用法：成本 类别 金额\n例：成本 场地 13778")
+                return
+            from ..db.models import Expense
+            s.add(Expense(spend_date=date.today(), category=sub[0], amount=amt))
+            s.commit()
+            await update.message.reply_text(f"✅ 记成本 {sub[0]} {_fmt(amt)}")
+            return
+
+        if cmd == "住宿":
+            sub = arg.split(maxsplit=1)
+            amt = _num(sub[0]) if sub else None
+            if amt is None:
+                await update.message.reply_text("用法：住宿 净收入 [备注]\n例：住宿 11400 5月")
+                return
+            from ..db.models import Lodging
+            s.add(Lodging(record_date=date.today(), net_income=amt,
+                          note=(sub[1] if len(sub) > 1 else None)))
+            s.commit()
+            await update.message.reply_text(f"✅ 记住宿净收入 {_fmt(amt)}")
+            return
+
+        if cmd == "坏账":
+            sub = arg.split()
+            amt = _num(sub[0]) if sub else None
+            if amt is None:
+                await update.message.reply_text("用法：坏账 金额 [工单号]\n例：坏账 3000 26052001")
+                return
+            from ..db.models import BadDebt
+            s.add(BadDebt(record_date=date.today(), amount=amt,
+                          order_id=(sub[1] if len(sub) > 1 else None)))
+            s.commit()
+            await update.message.reply_text(f"✅ 记坏账 {_fmt(amt)}")
+            return
+
+        if cmd == "换汇":
+            sub = arg.split()
+            if len(sub) < 3 or _num(sub[1]) is None or _num(sub[2]) is None:
+                await update.message.reply_text("用法：换汇 币种 换出额 实收RMB\n例：换汇 MYR 10000 17050")
+                return
+            from ..db.models import Fx
+            s.add(Fx(fx_date=date.today(), out_ccy=sub[0],
+                     out_amount=_num(sub[1]), in_rmb=_num(sub[2])))
+            s.commit()
+            await update.message.reply_text(f"✅ 记换汇 {sub[0]} {_fmt(_num(sub[1]))}→{_fmt(_num(sub[2]))}RMB")
+            return
+
         await update.message.reply_text(
-            "管理员指令：今日 / 艺人 X / 妈咪 X / 催账 X [范围] / 发月报 [年-月] / 作废 #N / 改 #N\n艺人指令：我是 X / 我的")
+            "管理员指令：\n查询: 今日 / 艺人X / 妈咪X / 利润[年-月] / 待结[妈咪]\n"
+            "结款: 结款 妈咪 金额 工单号…\n"
+            "财务: 成本 类别 金额 / 住宿 金额 / 坏账 金额 / 换汇 币种 换出 实收\n"
+            "报表: 催账X[范围] / 发月报[年-月]\n改单: 作废#N / 改#N\n艺人: 我是X / 我的")
     finally:
         s.close()
 
