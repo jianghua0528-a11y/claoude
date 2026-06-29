@@ -182,6 +182,24 @@ class Expense(Base):                      # 运营成本 / 支出
     notes: Mapped[Optional[str]] = mapped_column(Text)
 
 
+class Lodging(Base):                      # 艺人住宿 (Block I: 住宿净收入计入利润链)
+    __tablename__ = "lodging"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_date: Mapped[date] = mapped_column(Date)        # 归属月份(取 year/month)
+    artist_id: Mapped[Optional[int]] = mapped_column(ForeignKey("artists.id"))
+    net_income: Mapped[float] = mapped_column(Float)       # 住宿净收入(按重叠天数算后录入)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class BadDebt(Base):                      # 坏账 (Block I: 单独列示, 不冲利润)
+    __tablename__ = "bad_debts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    record_date: Mapped[date] = mapped_column(Date)
+    order_id: Mapped[Optional[str]] = mapped_column(String(8))   # 关联工单(可空)
+    amount: Mapped[float] = mapped_column(Float)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+
+
 class Fx(Base):                           # 换汇流水 (Block E 汇差来源, 次月发薪时实记)
     __tablename__ = "fx_flows"
     id: Mapped[int] = mapped_column(primary_key=True)

@@ -166,7 +166,9 @@ def profit_page(user=Depends(auth), year: int = 0, month: int = 0):
              f"<div><div class=n>{fmt(p['operating'])}</div><div class=l>经营利润</div></div></div>"
              "<p class=muted style='margin-top:12px'>"
              f"经营利润 {f2(p['operating'])} × 结算率 {p['settle_rate']} "
-             f"+ 汇差 {f2(p['spread'])} = <b>总利润 {f2(p['total'])} RMB</b></p>")
+             f"+ 汇差 {f2(p['spread'])} = <b>总利润 {f2(p['total'])} RMB</b></p>"
+             + (f"<p class=muted>坏账 {f2(p['bad_debt'])}（单独列示，不冲利润）</p>"
+                if p.get('bad_debt') else ""))
 
     prows = "".join(
         f"<tr><td>{name}</td><td class=r>{fmt(perf)}</td>"

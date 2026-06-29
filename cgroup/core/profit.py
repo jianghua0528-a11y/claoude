@@ -75,8 +75,12 @@ def profit_summary(session, year: int, month: int, *,
                    settle_rate: float = 1.65, rates: Optional[dict] = None) -> Dict:
     """某月利润链 + 分红 + 汇差 全聚合 (看板用)。
     住宿净收入 / 坏账暂无数据源, 记 0; 运营成本取 Expense 当月合计。"""
-    from ..db.models import Broker, Expense
+    from ..db.models import Broker, Expense, Lodging, BadDebt
     from .fx import monthly_spread, RATES_2026_05
+
+    def _in_month(d):
+        return d and d.year == year and d.month == month
+
     rates = rates or RATES_2026_05
     brokers = {b.id: b for b in session.query(Broker).all()}
 
@@ -87,10 +91,12 @@ def profit_summary(session, year: int, month: int, *,
     comm_total, comm_per = broker_commission({b: perf[b] for b in pct}, pct)
 
     costs = round(sum(e.amount for e in session.query(Expense).all()
-                      if e.spend_date and e.spend_date.year == year
-                      and e.spend_date.month == month), 2)
-    lodging = 0.0
-    op = operating_profit(gross, lodging, comm_total, costs, bad_debt=0.0)
+                      if _in_month(e.spend_date)), 2)
+    lodging = round(sum(x.net_income for x in session.query(Lodging).all()
+                        if _in_month(x.record_date)), 2)
+    bad_debt = round(sum(x.amount for x in session.query(BadDebt).all()
+                         if _in_month(x.record_date)), 2)
+    op = operating_profit(gross, lodging, comm_total, costs, bad_debt=bad_debt)
     spread = monthly_spread(session, year, month, rates)
     total = total_profit(op, spread, settle_rate)
 
@@ -100,6 +106,7 @@ def profit_summary(session, year: int, month: int, *,
     return dict(
         year=year, month=month,
         gross=gross, lodging=lodging, commission=comm_total, costs=costs,
+        bad_debt=bad_debt,
         operating=op, spread=spread, settle_rate=settle_rate, total=total,
         perf=perf_named,
         commission_per={brokers[b].name: v for b, v in comm_per.items()},

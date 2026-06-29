@@ -126,6 +126,23 @@ def test_profit_summary(db):
     assert "提成测B" not in p["dividends"]      # 非股东不分
 
 
+def test_lodging_and_bad_debt_pull_through(db):
+    """住宿净计入利润链; 坏账单独列示不冲利润。"""
+    from cgroup.core.profit import profit_summary
+    from cgroup.db.models import Lodging, BadDebt
+    s = db["s"]
+    s.add_all([
+        Lodging(record_date=date(2026, 7, 5), net_income=1000, note="7月住宿"),
+        BadDebt(record_date=date(2026, 7, 9), amount=500, note="7月坏账"),
+    ])
+    s.commit()
+    p = profit_summary(s, 2026, 7, settle_rate=1.65)
+    # 公司毛500 + 住宿1000 - 提成410 - 成本0 = 1090 (坏账不扣)
+    assert p["lodging"] == pytest.approx(1000)
+    assert p["bad_debt"] == pytest.approx(500)
+    assert p["operating"] == pytest.approx(1090)
+
+
 def test_profit_web_page(db):
     from starlette.testclient import TestClient
     from cgroup.web.app import app
