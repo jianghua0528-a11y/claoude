@@ -11,7 +11,7 @@ import secrets
 import tempfile
 from datetime import date
 
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
@@ -69,7 +69,7 @@ def page(title, body, active=""):
     def lk(href, label, key):
         return f"<a class='{'on' if key == active else ''}' href='{href}'>{label}</a>"
     nav = (lk("/", "看板", "home") + lk("/profit", "利润分红", "profit")
-           + lk("/review", "审核队列", "review")
+           + lk("/billing", "结款", "billing") + lk("/review", "审核队列", "review")
            + lk("/orders", "订单", "orders") + lk("/upload", "导入数据", "upload"))
     return _BASE.replace("__TITLE__", title).replace("__NAV__", nav).replace("__BODY__", body)
 
@@ -184,6 +184,80 @@ def profit_page(user=Depends(auth), year: int = 0, month: int = 0):
             f"{drows or '<tr><td colspan=2 class=muted>本月无可分利润</td></tr>'}</table>")
 
     return page("利润分红", card(chain) + card(ptab) + card(dtab), "profit")
+
+
+# ───────────────────────── 结款 (Block G 单一真相源) ─────────────────────────
+@app.get("/billing", response_class=HTMLResponse)
+def billing_page(user=Depends(auth), msg: str = ""):
+    from ..core.billing import order_receivable
+    from ..db.models import Payment
+    s = get_session()
+    try:
+        art = {x.id: x.name for x in s.query(Artist).all()}
+        mam = {x.id: x.name for x in s.query(Mama).all()}
+        # 待结挂账单
+        pend = (s.query(Order).filter(Order.status == "已审核",
+                Order.settle_status == "待结", Order.credit_k > 0)
+                .order_by(Order.mama_id, Order.biz_date).all())
+        rows = ""
+        for o in pend:
+            recv = order_receivable(o)
+            rows += (f"<tr><td><input type=checkbox name=oid value='{o.order_id or ''}'"
+                     f"{' disabled' if not o.order_id else ''}></td>"
+                     f"<td>{o.order_id or '—'}</td>"
+                     f"<td>{o.biz_date.strftime('%m/%d') if o.biz_date else '—'}</td>"
+                     f"<td>{mam.get(o.mama_id, '自单')}</td><td>{art.get(o.artist_id, '?')}</td>"
+                     f"<td class=r>{fmt(o.credit_k)}</td><td class=r>{fmt(o.ticket_o)}</td>"
+                     f"<td class=r>{fmt(recv)}</td></tr>")
+        flash = f"<p class=muted>{msg}</p>" if msg else ""
+        form = (flash +
+                "<h2>待结挂账单（勾选 → 登记收款冲账 → 标记已结）</h2>"
+                "<form method='post' action='/billing/pay'>"
+                "<table><tr><th></th><th>工单号</th><th>日期</th><th>妈咪</th><th>艺人</th>"
+                "<th class=r>挂账</th><th class=r>门票</th><th class=r>应收C组</th></tr>"
+                f"{rows or '<tr><td colspan=8 class=muted>没有待结挂账单</td></tr>'}</table>"
+                "<div style='margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+                "收款日期 " + _inp("pay_date", date.today().isoformat()) +
+                " 妈咪 " + _inp("mama", "") +
+                " 金额 " + _inp("amount", "") +
+                " <button class='btn g' type='submit'>登记收款</button></div></form>")
+        # 近期收款
+        pays = s.query(Payment).order_by(Payment.id.desc()).limit(10).all()
+        prows = "".join(
+            f"<tr><td>{p.pay_date.strftime('%m/%d') if p.pay_date else '—'}</td>"
+            f"<td>{mam.get(p.mama_id, '—')}</td><td class=r>{fmt(p.amount)}</td>"
+            f"<td class=muted style='font-size:12px'>{p.covers or ''}</td></tr>" for p in pays)
+        ptab = ("<h2>近期收款</h2><table><tr><th>日期</th><th>妈咪</th><th class=r>金额</th>"
+                f"<th>冲销工单</th></tr>{prows or '<tr><td colspan=4 class=muted>暂无</td></tr>'}</table>")
+        return page("结款", card(form) + card(ptab), "billing")
+    finally:
+        s.close()
+
+
+@app.post("/billing/pay")
+def billing_pay(user=Depends(auth), pay_date: str = Form(""), amount: float = Form(0),
+                mama: str = Form(""), oid: list = Form(default=[])):
+    from ..core.billing import apply_payment
+    from ..db.models import Payment
+    s = get_session()
+    try:
+        oids = [x for x in oid if x]
+        if not oids:
+            return RedirectResponse("/billing?msg=未勾选工单", status_code=303)
+        try:
+            pd = _dt.strptime(pay_date, "%Y-%m-%d").date() if pay_date else date.today()
+        except Exception:
+            pd = date.today()
+        m = s.query(Mama).filter_by(name=mama.strip()).first() if mama.strip() else None
+        pay = Payment(pay_date=pd, mama_id=m.id if m else None, amount=amount or 0)
+        res = apply_payment(s, pay, oids)
+        s.add(OperationLog(action="结款", target=",".join(res.marked),
+                           detail=f"收{amount:g} 应收{res.expected:g}" + (f" ⚠{res.flag}" if res.flag else "")))
+        s.commit()
+        msg = res.flag or f"已结 {len(res.marked)} 单, 收款 {amount:g} (应收 {res.expected:g})"
+    finally:
+        s.close()
+    return RedirectResponse(f"/billing?msg={msg}", status_code=303)
 
 
 # ───────────────────────── 导入数据 ─────────────────────────

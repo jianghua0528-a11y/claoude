@@ -124,3 +124,34 @@ def test_create_order_assigns_order_id():
     assert o.order_id is not None
     assert o.order_id.startswith("260815")        # YYMMDD
     assert o.settle_status == "待结"               # 默认待结
+
+
+def test_billing_web_flow():
+    """web 结款页: 列出待结挂账 → 登记收款 → 标记已结。"""
+    from cgroup.db.session import init_db, get_session
+    from cgroup.db.models import Artist, Mama, Venue, Order
+    from cgroup.core.billing import assign_order_id
+    from starlette.testclient import TestClient
+    from cgroup.web.app import app
+    init_db()
+    s = get_session()
+    a = Artist(name="结款Web艺人"); m = Mama(name="结款Web妈咪"); v = Venue(name="结款Web场所")
+    s.add_all([a, m, v]); s.flush()
+    o = Order(biz_date=date(2026, 9, 1), artist_id=a.id, venue_id=v.id, mama_id=m.id,
+              preset="标准", credit_k=3000, ticket_o=200, wp=3000, status="已审核")
+    s.add(o); s.flush()
+    assign_order_id(s, o)
+    oid = o.order_id
+    s.commit()
+
+    c = TestClient(app)
+    au = ("admin", "t")
+    # 列表含该待结工单
+    r = c.get("/billing", auth=au)
+    assert r.status_code == 200 and oid in r.text
+    # 登记收款冲该单 → 应收 2600
+    r = c.post("/billing/pay", auth=au, follow_redirects=False,
+               data={"oid": [oid], "amount": 2600, "pay_date": "2026-09-02", "mama": "结款Web妈咪"})
+    assert r.status_code == 303
+    s2 = get_session()
+    assert s2.query(Order).filter_by(order_id=oid).first().settle_status == "已结"
