@@ -150,3 +150,25 @@ def test_profit_web_page(db):
     r = c.get("/profit?year=2026&month=7", auth=("admin", "t"))
     assert r.status_code == 200
     assert "公司利润链" in r.text and "总利润" in r.text
+
+
+def test_finance_entry_web():
+    """财务录入页: 录成本/住宿/坏账/换汇 → 反映到利润链。"""
+    from cgroup.db.session import init_db, get_session
+    from cgroup.core.profit import profit_summary
+    from starlette.testclient import TestClient
+    from cgroup.web.app import app
+    init_db()
+    c = TestClient(app)
+    au = ("admin", "t")
+    assert c.get("/finance", auth=au).status_code == 200
+    # 2026-10: 录四类
+    c.post("/finance/expense", auth=au, data={"spend_date": "2026-10-05", "category": "场地", "amount": "500"}, follow_redirects=False)
+    c.post("/finance/lodging", auth=au, data={"record_date": "2026-10-06", "net_income": "1000"}, follow_redirects=False)
+    c.post("/finance/baddebt", auth=au, data={"record_date": "2026-10-07", "amount": "200"}, follow_redirects=False)
+    c.post("/finance/fx", auth=au, data={"fx_date": "2026-10-08", "out_ccy": "MYR", "out_amount": "1000", "in_rmb": "1700"}, follow_redirects=False)
+    p = profit_summary(get_session(), 2026, 10, settle_rate=1.65)
+    assert p["costs"] == pytest.approx(500)
+    assert p["lodging"] == pytest.approx(1000)
+    assert p["bad_debt"] == pytest.approx(200)
+    assert p["spread"] == pytest.approx(50)      # 1700 - 1000*1.65

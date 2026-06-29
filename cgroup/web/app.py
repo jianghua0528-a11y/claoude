@@ -69,7 +69,8 @@ def page(title, body, active=""):
     def lk(href, label, key):
         return f"<a class='{'on' if key == active else ''}' href='{href}'>{label}</a>"
     nav = (lk("/", "看板", "home") + lk("/profit", "利润分红", "profit")
-           + lk("/billing", "结款", "billing") + lk("/review", "审核队列", "review")
+           + lk("/billing", "结款", "billing") + lk("/finance", "财务", "finance")
+           + lk("/review", "审核队列", "review")
            + lk("/orders", "订单", "orders") + lk("/upload", "导入数据", "upload"))
     return _BASE.replace("__TITLE__", title).replace("__NAV__", nav).replace("__BODY__", body)
 
@@ -260,6 +261,125 @@ def billing_pay(user=Depends(auth), pay_date: str = Form(""), amount: float = Fo
     finally:
         s.close()
     return RedirectResponse(f"/billing?msg={msg}", status_code=303)
+
+
+# ───────────────────────── 财务录入 (成本/住宿/坏账/换汇) ─────────────────────────
+def _today():
+    return date.today().isoformat()
+
+
+@app.get("/finance", response_class=HTMLResponse)
+def finance_page(user=Depends(auth), msg: str = ""):
+    from ..db.models import Expense, Lodging, BadDebt, Fx
+    s = get_session()
+    try:
+        def form(title, action, fields):
+            inner = "".join(f"{lbl} {_inp(nm, val, ph)} " for lbl, nm, val, ph in fields)
+            return (f"<h2>{title}</h2><form method='post' action='{action}' "
+                    f"style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+                    f"{inner}<button class='btn g' type='submit'>添加</button></form>")
+
+        expense = form("运营成本", "/finance/expense", [
+            ("日期", "spend_date", _today(), ""), ("类别", "category", "", "场地/伙食/广告"),
+            ("金额", "amount", "", "")])
+        lodging = form("住宿净收入", "/finance/lodging", [
+            ("日期", "record_date", _today(), ""), ("净收入", "net_income", "", ""),
+            ("备注", "note", "", "")])
+        baddebt = form("坏账", "/finance/baddebt", [
+            ("日期", "record_date", _today(), ""), ("金额", "amount", "", ""),
+            ("工单号", "order_id", "", "可空"), ("备注", "note", "", "")])
+        fx = form("换汇流水", "/finance/fx", [
+            ("日期", "fx_date", _today(), ""), ("换出币种", "out_ccy", "MYR", ""),
+            ("换出额", "out_amount", "", ""), ("实收RMB", "in_rmb", "", "")])
+
+        def recent(rows):
+            return "".join(rows) or "<tr><td class=muted>暂无</td></tr>"
+        ex = recent([f"<tr><td>{e.spend_date}</td><td>{e.category}</td><td class=r>{fmt(e.amount)}</td></tr>"
+                     for e in s.query(Expense).order_by(Expense.id.desc()).limit(6)])
+        lo = recent([f"<tr><td>{x.record_date}</td><td class=r>{fmt(x.net_income)}</td><td>{x.note or ''}</td></tr>"
+                     for x in s.query(Lodging).order_by(Lodging.id.desc()).limit(6)])
+        bd = recent([f"<tr><td>{x.record_date}</td><td class=r>{fmt(x.amount)}</td><td>{x.order_id or ''} {x.note or ''}</td></tr>"
+                     for x in s.query(BadDebt).order_by(BadDebt.id.desc()).limit(6)])
+        fr = recent([f"<tr><td>{x.fx_date}</td><td>{x.out_ccy} {fmt(x.out_amount)}→{fmt(x.in_rmb)}RMB</td></tr>"
+                     for x in s.query(Fx).order_by(Fx.id.desc()).limit(6)])
+        flash = f"<p class=muted>{msg}</p>" if msg else ""
+        body = (card(flash + expense + "<table style='margin-top:10px'>" + ex + "</table>")
+                + card(lodging + "<table style='margin-top:10px'>" + lo + "</table>")
+                + card(baddebt + "<table style='margin-top:10px'>" + bd + "</table>")
+                + card(fx + "<table style='margin-top:10px'>" + fr + "</table>"))
+        return page("财务", body, "finance")
+    finally:
+        s.close()
+
+
+def _date(s_, default=None):
+    try:
+        return _dt.strptime(s_, "%Y-%m-%d").date() if s_ else (default or date.today())
+    except Exception:
+        return default or date.today()
+
+
+def _money(x):
+    try:
+        return float(x) if str(x).strip() else 0.0
+    except ValueError:
+        return 0.0
+
+
+@app.post("/finance/expense")
+def finance_expense(user=Depends(auth), spend_date: str = Form(""), category: str = Form(""),
+                    amount: str = Form("")):
+    from ..db.models import Expense
+    s = get_session()
+    try:
+        s.add(Expense(spend_date=_date(spend_date), category=category.strip() or "其他",
+                      amount=_money(amount)))
+        s.commit()
+    finally:
+        s.close()
+    return RedirectResponse("/finance?msg=已加运营成本", status_code=303)
+
+
+@app.post("/finance/lodging")
+def finance_lodging(user=Depends(auth), record_date: str = Form(""), net_income: str = Form(""),
+                    note: str = Form("")):
+    from ..db.models import Lodging
+    s = get_session()
+    try:
+        s.add(Lodging(record_date=_date(record_date), net_income=_money(net_income),
+                      note=note.strip() or None))
+        s.commit()
+    finally:
+        s.close()
+    return RedirectResponse("/finance?msg=已加住宿净收入", status_code=303)
+
+
+@app.post("/finance/baddebt")
+def finance_baddebt(user=Depends(auth), record_date: str = Form(""), amount: str = Form(""),
+                    order_id: str = Form(""), note: str = Form("")):
+    from ..db.models import BadDebt
+    s = get_session()
+    try:
+        s.add(BadDebt(record_date=_date(record_date), amount=_money(amount),
+                      order_id=order_id.strip() or None, note=note.strip() or None))
+        s.commit()
+    finally:
+        s.close()
+    return RedirectResponse("/finance?msg=已加坏账", status_code=303)
+
+
+@app.post("/finance/fx")
+def finance_fx(user=Depends(auth), fx_date: str = Form(""), out_ccy: str = Form("MYR"),
+               out_amount: str = Form(""), in_rmb: str = Form("")):
+    from ..db.models import Fx
+    s = get_session()
+    try:
+        s.add(Fx(fx_date=_date(fx_date), out_ccy=out_ccy.strip() or "MYR",
+                 out_amount=_money(out_amount), in_rmb=_money(in_rmb)))
+        s.commit()
+    finally:
+        s.close()
+    return RedirectResponse("/finance?msg=已加换汇流水", status_code=303)
 
 
 # ───────────────────────── 导入数据 ─────────────────────────
