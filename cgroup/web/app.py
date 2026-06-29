@@ -11,6 +11,8 @@ import secrets
 import tempfile
 from datetime import date
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -19,14 +21,16 @@ from ..db.session import get_session, init_db
 from ..db.models import Order, Artist, Mama, Venue, ReviewItem, OperationLog
 from ..core.settle import settle_db
 
-app = FastAPI(title="C组审核后台")
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()                 # 启动建表 (create_all, 仅建缺失表)
+    yield
+
+
+app = FastAPI(title="C组审核后台", lifespan=lifespan)
 security = HTTPBasic()
 ADMIN_PW = os.getenv("ADMIN_PASSWORD", "cgroup")
-
-
-@app.on_event("startup")
-def _startup():
-    init_db()
 
 
 def auth(cred: HTTPBasicCredentials = Depends(security)):
