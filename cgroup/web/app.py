@@ -98,9 +98,9 @@ def dashboard(user=Depends(auth)):
             SK += o.credit_k; SM += o.cash_m; SO += o.ticket_o
             a += r.artist_net; m += r.mama_net; c += r.company_net
             if o.artist_id:
-                wages[o.artist_id] = wages.get(o.artist_id, 0) + r.artist_month_end
+                wages[o.artist_id] = wages.get(o.artist_id, 0) + r.artist_payroll
             if o.mama_id:
-                recv[o.mama_id] = recv.get(o.mama_id, 0) + r.mama_receivable - r.mama_rebate
+                recv[o.mama_id] = recv.get(o.mama_id, 0) + r.mama_owes_company - r.rebate
         art = {x.id: x.name for x in s.query(Artist).all()}
         mam = {x.id: x.name for x in s.query(Mama).all()}
         pending = s.query(ReviewItem).filter_by(status="待审").count()

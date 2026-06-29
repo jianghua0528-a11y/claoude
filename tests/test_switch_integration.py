@@ -49,17 +49,17 @@ def test_preset_settles_per_constitution(db):
 
     # 标准挂账: 应发 0.7*3000+200=2300; 妈咪应结 3200-600=2600; 公司净 300
     r = settle_db(one(preset="标准", credit_k=3000))
-    assert r.artist_month_end == pytest.approx(2300)
-    assert r.mama_receivable == pytest.approx(2600)
+    assert r.artist_payroll == pytest.approx(2300)
+    assert r.mama_owes_company == pytest.approx(2600)
     assert r.company_net == pytest.approx(300)
     # 无水单(表外): 实操全 0, 经济净仍在
     rd = settle_db(one(preset="无水单"))
-    assert rd.is_direct_settle is True and rd.on_books is False
-    assert rd.artist_month_end == 0 and rd.mama_receivable == 0
+    assert rd.on_books is False
+    assert rd.artist_payroll == 0 and rd.mama_owes_company == 0
     assert rd.artist_net == pytest.approx(0.7 * 2000)
     # 自定义 100/0/0
     rg = settle_db(one(preset="自定义"))
-    assert rg.artist_month_end == pytest.approx(1000)
+    assert rg.artist_payroll == pytest.approx(1000)
     assert rg.company_net == 0
 
 

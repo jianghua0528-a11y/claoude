@@ -45,8 +45,9 @@ uvicorn cgroup.web.app:app        # 审核后台 (Basic Auth: admin / $ADMIN_PAS
 ## 已知缺口 / 刻意延后
 
 - 字典 5 张分表（Broker/Artist/Mama/MamaAssistant/Venue）→ `master_data` 统一表**未合并**；`directory.entries_from_legacy` 已桥接，认人可用。
-- `settle.Settlement` 保留兼容别名（`artist_month_end`/`mama_receivable`/`mama_rebate`/`is_direct_settle`）供 queries/reports/web 使用，未退役。
 - 住宿净收入「按重叠天数算」未实现，`Lodging.net_income` 为录入值。
+
+`settle.Settlement` 字段用宪法口径名：`artist_payroll`（工资单本单金额）/`mama_owes_company`（挂账妈咪应结公司）/`rebate`（现金反水）/`on_books`（是否走公司账，无水单为 False）。
 
 ## 约定
 

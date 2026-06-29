@@ -27,7 +27,7 @@ def artist_summary(session, artist_id, year, month):
         r = settle_db(o)
         perf += o.credit_k + o.cash_m
         tickets += o.ticket_o
-        wage += r.artist_month_end
+        wage += r.artist_payroll
         n += 1
     return dict(n=n, perf=perf, tickets=tickets, wage=wage)
 
@@ -44,7 +44,7 @@ def mama_summary(session, mama_id, start=None, end=None):
         r = settle_db(o)
         K += o.credit_k
         O += o.ticket_o
-        recv += r.mama_receivable - r.mama_rebate
+        recv += r.mama_owes_company - r.rebate
         rows.append((o, r))
     rows.sort(key=lambda x: (x[0].biz_date or date.min))
     return dict(n=len(rows), K=K, O=O, recv=recv, rows=rows)

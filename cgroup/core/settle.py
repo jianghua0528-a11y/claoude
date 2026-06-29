@@ -71,23 +71,6 @@ class Settlement:
     # ── 标记 ──
     needs_review: Optional[str] = None
 
-    # ── 兼容别名 (切换期: 旧 settlement.Result 的字段名映射到宪法口径) ──
-    @property
-    def artist_month_end(self) -> float:      # 旧名: 月底应结 → 工资单本单金额
-        return self.artist_payroll
-
-    @property
-    def mama_receivable(self) -> float:       # 旧名: 挂账单妈咪应结公司
-        return self.mama_owes_company
-
-    @property
-    def mama_rebate(self) -> float:           # 旧名: 现金单反水
-        return self.rebate
-
-    @property
-    def is_direct_settle(self) -> bool:       # 旧名: 直结(妈咪直结不进公司账) = 表外
-        return not self.on_books
-
 
 def _ratios(o: "Order"):
     """取 (a, m, c, on_books); 校验 a+m+c==1。"""

@@ -43,12 +43,12 @@ def mama_statement_png(session, mama_id, start=None, end=None, period_label="对
         dd = o.biz_date.strftime("%m/%d") if o.biz_date else "?"
         if o.credit_k > 0:
             k_rows.append(dict(日期=dd, 艺人=art.get(o.artist_id, "?"), 场所=ven.get(o.venue_id, ""),
-                               包厢=o.room, 客人=o.customer, K=o.credit_k, O=o.ticket_o, 应收=r.mama_receivable))
+                               包厢=o.room, 客人=o.customer, K=o.credit_k, O=o.ticket_o, 应收=r.mama_owes_company))
             TK += o.credit_k; TO += o.ticket_o
         if o.cash_m > 0:
             m_rows.append(dict(日期=dd, 艺人=art.get(o.artist_id, "?"), 场所=ven.get(o.venue_id, ""),
-                               包厢=o.room, 客人=o.customer, wp=o.wp or o.cash_m, 流向=o.flow, 反水=r.mama_rebate))
-            TR += r.mama_rebate
+                               包厢=o.room, 客人=o.customer, wp=o.wp or o.cash_m, 流向=o.flow, 反水=r.rebate))
+            TR += r.rebate
     if not k_rows and not m_rows:
         return None
     totals = dict(挂账=TK, 门票=TO, 反水=TR, 应结=TK * 0.8 + TO - TR)
@@ -64,15 +64,15 @@ def artist_payslip_png(session, artist_id, year, month):
             continue
         r = settle_db(o)
         dd = o.biz_date.strftime("%m/%d")
-        if r.is_direct_settle:
+        if not r.on_books:
             direct.append(dict(日期=dd, 场所=ven.get(o.venue_id, ""), 包厢=o.room,
                                妈咪=mam.get(o.mama_id, ""), K=o.credit_k))
             continue
         seq += 1
         rows.append(dict(序=seq, 日期=dd, 场所=ven.get(o.venue_id, ""), 包厢=o.room,
                          妈咪=mam.get(o.mama_id, "自单"), 客人=o.customer, K=o.credit_k,
-                         wp=(o.wp or o.cash_m or o.credit_k), O=o.ticket_o, 分成=r.artist_month_end))
-        wage += r.artist_month_end
+                         wp=(o.wp or o.cash_m or o.credit_k), O=o.ticket_o, 分成=r.artist_payroll))
+        wage += r.artist_payroll
     if not rows and not direct:
         return None, 0
     png = render.render_artist_payslip(art.get(artist_id, "?"), f"{year}年{month}月", rows, wage, direct_rows=direct)
