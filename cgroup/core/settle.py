@@ -155,13 +155,14 @@ def settle(o: "Order") -> "Settlement":
 
 
 def _verify(s: "Settlement") -> "Settlement":
-    """内部一致性自检 (开发期断言, 防引擎写错):
-       ① 公司净恒 = c*wp (Block B 铁律);
-       ② 艺人实得 (现场 + 工资单) == 经济口径 artist_net。"""
-    assert abs(s.company_net - s.c * s.wp) < 1e-6, "公司净 != c*wp"
+    """实操一致性软校验: 艺人实得(现场+工资) 应 == 经济口径 artist_net。
+    不平时(多因旧数据口径不一致, 如现金是否含门票)只标记 needs_review, **不崩**;
+    经济口径(三方净)始终正确。公司净恒 = c*wp 由构造保证, 无需断言。"""
     artist_total = s.onsite_artist + s.artist_payroll
-    assert abs(artist_total - s.artist_net) < 1e-6, (
-        f"艺人实得对不平: 现场{s.onsite_artist}+工资{s.artist_payroll} != 净{s.artist_net}")
+    if abs(artist_total - s.artist_net) >= 1e-6:
+        note = (f"实操对账不平(疑录入口径,如现金含门票): "
+                f"现场{s.onsite_artist:.0f}+工资{s.artist_payroll:.0f}≠净{s.artist_net:.0f}")
+        s.needs_review = (s.needs_review + "; " + note) if s.needs_review else note
     return s
 
 

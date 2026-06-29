@@ -149,6 +149,15 @@ def test_cash_requires_flow():
         settle(Order(order_type="现金", M=WP, wp=WP, flow=None))
 
 
+def test_inconsistent_data_flags_not_crash():
+    """旧数据口径不一致(现金含门票, M=wp+O)不应崩, 只标 needs_review; 经济口径仍对。"""
+    # 现金 D, M 含门票(3150=wp3000+票150) → 实操 onsite 会多算门票, 软校验标记
+    s = settle(Order(order_type="现金", M=3150, O=150, wp=3000, preset="标准", flow="D"))
+    assert s.needs_review is not None and "对账不平" in s.needs_review
+    assert s.company_net == pytest.approx(0.10 * 3000)   # 经济口径不受影响
+    assert s.artist_net == pytest.approx(0.70 * 3000 + 150)
+
+
 def test_mixed_flags_review():
     s = settle(Order(order_type="混合", K=1000, M=2000, O=O, wp=3000, preset="标准", flow="B"))
     assert s.needs_review is not None

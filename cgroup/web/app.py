@@ -74,8 +74,8 @@ def page(title, body, active=""):
         return f"<a class='{'on' if key == active else ''}' href='{href}'>{label}</a>"
     nav = (lk("/", "看板", "home") + lk("/profit", "利润分红", "profit")
            + lk("/billing", "结款", "billing") + lk("/finance", "财务", "finance")
-           + lk("/review", "审核队列", "review")
-           + lk("/orders", "订单", "orders") + lk("/upload", "导入数据", "upload"))
+           + lk("/review", "审核队列", "review") + lk("/orders", "订单", "orders")
+           + lk("/dict", "字典", "dict") + lk("/upload", "导入数据", "upload"))
     return _BASE.replace("__TITLE__", title).replace("__NAV__", nav).replace("__BODY__", body)
 
 
@@ -89,12 +89,17 @@ def fmt(n):
 
 # ───────────────────────── 看板 ─────────────────────────
 @app.get("/", response_class=HTMLResponse)
-def dashboard(user=Depends(auth)):
+def dashboard(user=Depends(auth), year: int = 0, month: int = 0):
     s = get_session()
     try:
-        orders = s.query(Order).filter(Order.status == "已审核").all()
-        if not orders:
+        all_orders = s.query(Order).filter(Order.status == "已审核").all()
+        if not all_orders:
             return page("看板", card("还没数据。先去 <a href='/upload'>导入数据</a> 上传旧主文件。"), "home")
+        if not (year and month):
+            last = max((o.biz_date for o in all_orders if o.biz_date), default=date.today())
+            year, month = last.year, last.month
+        orders = [o for o in all_orders if o.biz_date and o.biz_date.year == year and o.biz_date.month == month]
+
         SK = SM = SO = a = m = c = 0.0
         wages, recv = {}, {}
         for o in orders:
@@ -109,8 +114,12 @@ def dashboard(user=Depends(auth)):
         mam = {x.id: x.name for x in s.query(Mama).all()}
         pending = s.query(ReviewItem).filter_by(status="待审").count()
 
+        py, pm = (year - 1, 12) if month == 1 else (year, month - 1)
+        ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+        switch = (f"<p class=muted><a href='/?year={py}&month={pm}'>← 上月</a> &nbsp; "
+                  f"<b>{year}年{month}月</b> &nbsp; <a href='/?year={ny}&month={nm}'>下月 →</a></p>")
         kpi = ("<div class=kpi>"
-               f"<div><div class=n>{len(orders)}</div><div class=l>总单数</div></div>"
+               f"<div><div class=n>{len(orders)}</div><div class=l>本月单数</div></div>"
                f"<div><div class=n>{fmt(SK)}</div><div class=l>挂账</div></div>"
                f"<div><div class=n>{fmt(SM)}</div><div class=l>现金</div></div>"
                f"<div><div class=n>{fmt(SO)}</div><div class=l>门票</div></div></div>"
@@ -118,7 +127,7 @@ def dashboard(user=Depends(auth)):
                f"<div><div class=n>{fmt(a)}</div><div class=l>艺人净</div></div>"
                f"<div><div class=n>{fmt(m)}</div><div class=l>妈咪净</div></div>"
                f"<div><div class=n>{fmt(c)}</div><div class=l>公司净</div></div></div>")
-        head = f"<h2>总览（{len(orders)} 单）</h2>{kpi}"
+        head = f"<h2>{year}年{month}月总览（{len(orders)} 单）</h2>{switch}{kpi}"
         if pending:
             head += f"<p class=muted style='margin-top:12px'>🔔 审核队列有 <b>{pending}</b> 单待处理 → <a href='/review'>去审核</a></p>"
 
@@ -217,18 +226,13 @@ def billing_page(user=Depends(auth), msg: str = ""):
                      f"<td class=r>{fmt(o.credit_k)}</td><td class=r>{fmt(o.ticket_o)}</td>"
                      f"<td class=r>{fmt(recv)}</td></tr>")
         flash = f"<p class=muted>{msg}</p>" if msg else ""
-        form = (flash +
-                "<h2>待结挂账单（勾选 → 登记收款冲账 → 标记已结）</h2>"
-                "<form method='post' action='/billing/pay'>"
-                "<table><tr><th></th><th>工单号</th><th>日期</th><th>妈咪</th><th>艺人</th>"
-                "<th class=r>挂账</th><th class=r>门票</th><th class=r>应收C组</th></tr>"
-                f"{rows or '<tr><td colspan=8 class=muted>没有待结挂账单</td></tr>'}</table>"
-                "<div style='margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
-                "收款日期 " + _inp("pay_date", date.today().isoformat()) +
-                " 妈咪 " + _inp("mama", "") +
-                " 金额 " + _inp("amount", "") +
-                " <button class='btn g' type='submit'>登记收款</button></div></form>")
-        # 近期收款
+        # 登记收款表单 (置顶)
+        inputs = (flash + "<h2>登记收款</h2>"
+                  "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+                  "收款日期 " + _inp("pay_date", date.today().isoformat()) +
+                  " 妈咪 " + _inp("mama", "") + " 金额 " + _inp("amount", "") +
+                  " <button class='btn g' type='submit'>登记收款（冲下方勾选的工单）</button></div>")
+        # 近期收款 (置顶)
         pays = s.query(Payment).order_by(Payment.id.desc()).limit(10).all()
         prows = "".join(
             f"<tr><td>{p.pay_date.strftime('%m/%d') if p.pay_date else '—'}</td>"
@@ -236,7 +240,14 @@ def billing_page(user=Depends(auth), msg: str = ""):
             f"<td class=muted style='font-size:12px'>{p.covers or ''}</td></tr>" for p in pays)
         ptab = ("<h2>近期收款</h2><table><tr><th>日期</th><th>妈咪</th><th class=r>金额</th>"
                 f"<th>冲销工单</th></tr>{prows or '<tr><td colspan=4 class=muted>暂无</td></tr>'}</table>")
-        return page("结款", card(form) + card(ptab), "billing")
+        # 待结挂账列表 (置底, 带勾选)
+        pend_tab = ("<h2>待结挂账单（勾选要冲销的工单）</h2>"
+                    "<table><tr><th></th><th>工单号</th><th>日期</th><th>妈咪</th><th>艺人</th>"
+                    "<th class=r>挂账</th><th class=r>门票</th><th class=r>应收C组</th></tr>"
+                    f"{rows or '<tr><td colspan=8 class=muted>没有待结挂账单</td></tr>'}</table>")
+        body = ("<form method='post' action='/billing/pay'>"
+                + card(inputs) + card(ptab) + card(pend_tab) + "</form>")
+        return page("结款", body, "billing")
     finally:
         s.close()
 
@@ -386,6 +397,115 @@ def finance_fx(user=Depends(auth), fx_date: str = Form(""), out_ccy: str = Form(
     return RedirectResponse("/finance?msg=已加换汇流水", status_code=303)
 
 
+# ───────────────────────── 基础字典 (增 / 改) ─────────────────────────
+def _si(name, val=""):
+    return (f"<input name='{name}' value='{val}' "
+            f"style='padding:6px;border:1px solid #F4C0D1;border-radius:5px;width:110px'>")
+
+
+@app.get("/dict", response_class=HTMLResponse)
+def dict_page(user=Depends(auth), msg: str = ""):
+    from ..db.models import Broker
+    s = get_session()
+    try:
+        flash = f"<p class=muted>{msg}</p>" if msg else ""
+        brokers = s.query(Broker).order_by(Broker.name).all()
+        bromap = {b.id: b.name for b in brokers}
+        bro_opts = "".join(f"<option>{b.name}</option>" for b in brokers)
+
+        def rn(kind, oid, name):
+            return (f"<form method=post action=/dict/rename style='display:inline'>"
+                    f"<input type=hidden name=kind value={kind}><input type=hidden name=oid value={oid}>"
+                    f"{_si('name', name)}<button class='btn' style='padding:4px 8px'>改</button></form>")
+
+        def addform(kind, extra=""):
+            return ("<form method=post action=/dict/add "
+                    "style='margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center'>"
+                    f"<input type=hidden name=kind value={kind}>名字 {_si('name')} {extra}"
+                    " <button class='btn g'>加</button></form>")
+
+        brows = "".join(f"<tr><td>{rn('broker', b.id, b.name)}</td>"
+                        f"<td class=r>{b.pct * 100:.0f}%</td><td>{'股东' if b.is_shareholder else ''}</td></tr>"
+                        for b in brokers)
+        bcard = ("<h2>经纪人</h2><table><tr><th>名字</th><th class=r>提成</th><th>股东</th></tr>"
+                 f"{brows or '<tr><td colspan=3 class=muted>无</td></tr>'}</table>"
+                 + addform("broker", "提成% " + _si("pct", "7")
+                           + " <label><input type=checkbox name=shareholder> 股东</label>"))
+
+        arts = s.query(Artist).order_by(Artist.name).all()
+        arows = "".join(f"<tr><td>{rn('artist', a.id, a.name)}</td><td>{bromap.get(a.broker_id, '')}</td></tr>"
+                        for a in arts)
+        acard = (f"<h2>艺人（{len(arts)}）</h2><table><tr><th>名字</th><th>经纪人</th></tr>"
+                 f"{arows or '<tr><td colspan=2 class=muted>无</td></tr>'}</table>"
+                 + addform("artist", f"经纪人 <select name=broker style='padding:6px'><option></option>{bro_opts}</select>"))
+
+        mamas = s.query(Mama).order_by(Mama.name).all()
+        mrows = "".join(f"<tr><td>{rn('mama', m.id, m.name)}</td></tr>" for m in mamas)
+        mcard = (f"<h2>妈咪（{len(mamas)}）</h2><table><tr><th>名字</th></tr>"
+                 f"{mrows or '<tr><td class=muted>无</td></tr>'}</table>" + addform("mama"))
+
+        vens = s.query(Venue).order_by(Venue.name).all()
+        vrows = "".join(f"<tr><td>{rn('venue', v.id, v.name)}</td><td class=r>{fmt(v.default_ticket)}</td></tr>"
+                        for v in vens)
+        vcard = (f"<h2>场所（{len(vens)}）</h2><table><tr><th>名字</th><th class=r>默认门票</th></tr>"
+                 f"{vrows or '<tr><td colspan=2 class=muted>无</td></tr>'}</table>"
+                 + addform("venue", "默认门票 " + _si("ticket", "0")))
+
+        return page("字典", card(flash + bcard) + card(acard) + card(mcard) + card(vcard), "dict")
+    finally:
+        s.close()
+
+
+@app.post("/dict/add")
+def dict_add(user=Depends(auth), kind: str = Form(""), name: str = Form(""),
+             broker: str = Form(""), pct: str = Form(""), shareholder: str = Form(""),
+             ticket: str = Form("")):
+    from ..db.models import Broker
+    s = get_session()
+    try:
+        name = name.strip()
+        if not name:
+            return RedirectResponse("/dict?msg=名字不能为空", status_code=303)
+        if kind == "broker":
+            s.add(Broker(name=name, pct=(_money(pct) / 100 if pct.strip() else 0.07),
+                         is_shareholder=bool(shareholder)))
+        elif kind == "artist":
+            b = s.query(Broker).filter_by(name=broker.strip()).first() if broker.strip() else None
+            s.add(Artist(name=name, broker_id=b.id if b else None))
+        elif kind == "mama":
+            s.add(Mama(name=name))
+        elif kind == "venue":
+            s.add(Venue(name=name, default_ticket=_money(ticket)))
+        s.commit()
+        msg = f"已加 {name}"
+    except Exception:
+        s.rollback()
+        msg = f"添加失败（可能重名）: {name}"
+    finally:
+        s.close()
+    return RedirectResponse(f"/dict?msg={msg}", status_code=303)
+
+
+@app.post("/dict/rename")
+def dict_rename(user=Depends(auth), kind: str = Form(""), oid: int = Form(0), name: str = Form("")):
+    from ..db.models import Broker
+    model = {"broker": Broker, "artist": Artist, "mama": Mama, "venue": Venue}.get(kind)
+    s = get_session()
+    try:
+        if model and name.strip():
+            o = s.get(model, oid)
+            if o:
+                o.name = name.strip()
+                s.commit()
+        msg = "已改名"
+    except Exception:
+        s.rollback()
+        msg = "改名失败（可能重名）"
+    finally:
+        s.close()
+    return RedirectResponse(f"/dict?msg={msg}", status_code=303)
+
+
 # ───────────────────────── 导入数据 ─────────────────────────
 @app.get("/upload", response_class=HTMLResponse)
 def upload_form(user=Depends(auth)):
@@ -504,20 +624,24 @@ FLOWS = ["", "A", "B", "D", "E"]
 
 
 @app.get("/orders", response_class=HTMLResponse)
-def orders_list(user=Depends(auth), q: str = "", n: int = 60):
+def orders_list(user=Depends(auth), q: str = "", pg: int = 1):
+    PER = 50
     s = get_session()
     try:
         art = {x.id: x.name for x in s.query(Artist).all()}
         mam = {x.id: x.name for x in s.query(Mama).all()}
         ven = {x.id: x.name for x in s.query(Venue).all()}
         query = s.query(Order).order_by(Order.biz_date.desc().nullslast(), Order.id.desc())
-        rows_all = query.limit(400).all()
+        rows_all = query.all()
         if q:
             rows_all = [o for o in rows_all if q in (art.get(o.artist_id, "") + mam.get(o.mama_id, "")
                         + (o.customer or "") + ven.get(o.venue_id, ""))]
-        rows_all = rows_all[:n]
+        total = len(rows_all)
+        pages = max(1, (total + PER - 1) // PER)
+        pg = max(1, min(pg, pages))
+        rows_page = rows_all[(pg - 1) * PER: pg * PER]
         trs = ""
-        for o in rows_all:
+        for o in rows_page:
             void = o.status != "已审核"
             style = " style='opacity:.45'" if void else ""
             trs += (f"<tr{style}><td>#{o.id}</td>"
@@ -529,12 +653,19 @@ def orders_list(user=Depends(auth), q: str = "", n: int = 60):
                     f"<td class=r>{fmt(o.ticket_o)}</td><td>{o.preset}</td>"
                     f"<td>{o.customer or '—'}</td>"
                     f"<td><a class=btn href='/orders/{o.id}/edit'>改</a></td></tr>")
+        def plink(p, label):
+            if 1 <= p <= pages and p != pg:
+                return f"<a class='btn' href='/orders?q={q}&pg={p}'>{label}</a> "
+            return f"<span class='btn x'>{label}</span> "
+        pager = (f"<div style='margin-top:12px'>{plink(pg - 1, '← 上页')}"
+                 f"<b>第 {pg}/{pages} 页</b>（共 {total} 单）{plink(pg + 1, '下页 →')}</div>")
         body = (f"<h2>订单（改单 / 作废）</h2>"
                 f"<form method='get' style='margin-bottom:12px'>"
                 f"<input name='q' value='{q}' placeholder='搜艺人/妈咪/客人/场所' style='padding:7px;border:1px solid #F4C0D1;border-radius:6px'> "
                 f"<button class='btn'>搜</button></form>"
                 f"<table><tr><th>#</th><th>日期</th><th>艺人</th><th>场所</th><th>妈咪</th>"
-                f"<th class=r>挂账</th><th class=r>现金</th><th class=r>门票</th><th>档</th><th>客人</th><th></th></tr>{trs}</table>")
+                f"<th class=r>挂账</th><th class=r>现金</th><th class=r>门票</th><th>档</th><th>客人</th><th></th></tr>{trs}</table>"
+                f"{pager}")
         return page("订单", card(body), "orders")
     finally:
         s.close()
