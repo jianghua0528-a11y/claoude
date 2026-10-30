@@ -89,6 +89,8 @@ label{display:block;font-size:12px;color:#777;margin:10px 0 4px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
 .row>div{flex:1;min-width:140px}
 .row input,.row select{width:100%}
+.row input[type=checkbox]{width:auto}
+.vt input:not([type=checkbox]){width:90px}
 </style></head><body>
 <div class=top><b>__SHOP__ 后台</b>__NAV__</div><div class=wrap>__FLASH____BODY__</div></body></html>"""
 
@@ -362,7 +364,7 @@ def product_edit(pid: int, request: Request, s=Depends(db), _=Depends(auth)):
         f"<td><label style='margin:0'><input type=checkbox name=del_{v.id} value=1> 删</label></td></tr>"
         for v in p.variants)
     variants = (f"<form method=post action='/products/{p.id}/variants'>"
-                f"<table><tr><th>颜色</th><th>尺码</th><th>库存</th><th>单独定价</th><th></th></tr>"
+                f"<table class=vt><tr><th>颜色</th><th>尺码</th><th>库存</th><th>单独定价</th><th></th></tr>"
                 f"{vrows or '<tr><td colspan=5 class=muted>还没有规格，用下面批量生成</td></tr>'}</table>"
                 f"<p><button class='btn g'>保存规格/库存</button></p></form>")
     bulk = (f"<form method=post action='/products/{p.id}/bulk' class=row>"
