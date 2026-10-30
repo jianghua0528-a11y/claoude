@@ -18,9 +18,9 @@ from telegram.ext import (Application, MessageHandler, CommandHandler,
                           CallbackQueryHandler, filters, ContextTypes)
 
 from ..db.session import get_session, init_db
-from ..db.models import ReviewItem
-from ..parser.parse import ingest
-from ..core.intake import create_order_from_payload
+from ..db.models import ReviewItem, OperationLog
+from ..parser.parse import ingest, ParseError
+from ..core.intake import create_order_from_payload, IntakeError
 
 KL = ZoneInfo("Asia/Kuala_Lumpur")
 
@@ -31,6 +31,13 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 REPORT_GROUP = os.getenv("REPORT_GROUP_ID", "")
 FINANCE_GROUP = os.getenv("FINANCE_GROUP_ID", "")
 ADMIN_IDS = [x.strip() for x in os.getenv("ADMIN_USER_IDS", "").split(",") if x.strip()]
+ADMIN_URL = os.getenv("ADMIN_URL", "").rstrip("/")
+
+
+def biz_today():
+    """工作日 12:00 边界: 中午前还算前一天的班。"""
+    now = datetime.now(KL)
+    return (now - timedelta(days=1)).date() if now.hour < 12 else now.date()
 
 
 def _review_text(payload, warn):
@@ -66,7 +73,8 @@ async def on_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                        tg_msg_id=msg.message_id,
                        tg_sender=msg.from_user.full_name if msg.from_user else None)
     except Exception as e:
-        log.exception("解析失败")
+        if not isinstance(e, ParseError):
+            log.exception("解析失败")
         s2 = get_session()
         try:
             s2.add(ReviewItem(source_group="报单群", raw_message=text[:2000],
@@ -75,7 +83,8 @@ async def on_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             s2.commit()
         finally:
             s2.close()
-        await msg.reply_text("⚠️ 这条没解析出来，已记原文待人工看。")
+        reason = str(e) if isinstance(e, ParseError) else "系统异常"
+        await msg.reply_text(f"⚠️ 这条没解析出来（{reason}），已记原文待人工看。")
         return
     finally:
         s.close()
@@ -114,12 +123,25 @@ async def on_review_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         if action == "ok":
             d = json.loads(ri.parsed_json or "{}")
-            create_order_from_payload(d, s, source_msg_id=ri.tg_msg_id)
+            try:
+                o = create_order_from_payload(d, s, source_msg_id=ri.tg_msg_id)
+            except IntakeError as e:
+                s.rollback()
+                link = f"\n去网页改: {ADMIN_URL}/review/{rid}" if ADMIN_URL else "\n去网页后台审核队列改"
+                await q.edit_message_text((q.message.text or "") + f"\n\n⚠️ 没入库：{e}{link}")
+                return
             ri.status = "已确认"
+            ri.reviewed_at = datetime.now()
+            s.flush()
+            s.add(OperationLog(action="审核确认", target=f"review#{rid}",
+                               detail=f"→order#{o.id} (TG)", operator=q.from_user.full_name[:30]))
             s.commit()
-            await q.edit_message_text((q.message.text or "") + "\n\n✅ 已入库")
+            await q.edit_message_text((q.message.text or "") + f"\n\n✅ 已入库 #{o.id}")
         elif action == "no":
             ri.status = "已拒"
+            ri.reviewed_at = datetime.now()
+            s.add(OperationLog(action="审核拒绝", target=f"review#{rid}", detail="(TG)",
+                               operator=q.from_user.full_name[:30]))
             s.commit()
             await q.edit_message_text((q.message.text or "") + "\n\n❌ 已拒")
     except Exception:
@@ -155,12 +177,36 @@ def _fmt(n):
     return f"{n:,.0f}"
 
 
+def parse_range(txt, today):
+    """'6.15-6.20' → (date, date)。跨年(如 1 月查 12.20-12.31)自动算上一年。"""
+    mr = re.match(r"(\d{1,2})\.(\d{1,2})-(\d{1,2})\.(\d{1,2})$", txt.strip())
+    if not mr:
+        return None
+    m1, d1, m2, d2 = (int(x) for x in mr.groups())
+    y2 = today.year if m2 <= today.month else today.year - 1
+    y1 = y2 if m1 <= m2 else y2 - 1
+    try:
+        return date(y1, m1, d1), date(y2, m2, d2)
+    except ValueError:
+        return None
+
+
+def _artist_text(s, art):
+    from ..core.queries import artist_summary
+    t = biz_today()
+    d = artist_summary(s, art.id, t.year, t.month, artist_name=art.name)
+    txt = (f"🎤 {art.name} · {t.month}月\n单数 {d['n']}\n业绩 {_fmt(d['perf'])}\n"
+           f"门票 {_fmt(d['tickets'])}\n应发(月底应结) {_fmt(d['wage'])} MYR")
+    if d["deduct"]:
+        txt += f"\n预支/罚款待扣 −{_fmt(d['deduct'])}\n预计实发 {_fmt(d['net'])} MYR"
+    return txt
+
+
 async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """私聊路由: 我是 / 我的 / 今日 / 艺人 / 妈咪 / 催账 (支持带不带 / )。"""
-    from ..db.session import get_session
-    from ..db.models import Artist, Mama, OperationLog
-    from ..core.queries import artist_summary, mama_summary, day_summary
-    from datetime import date
+    from ..db.models import Artist, Order
+    from ..core.names import find_artist, find_mama
+    from ..core.queries import mama_summary, day_summary
 
     text = (update.message.text or "").strip().lstrip("/")
     parts = text.split(maxsplit=1)
@@ -173,7 +219,7 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if cmd == "我是":
             if not arg:
                 await update.message.reply_text("用法：我是 你的艺名（例：我是 桃子）"); return
-            art = s.query(Artist).filter_by(name=arg).first()
+            art = find_artist(s, arg)
             if not art:
                 await update.message.reply_text(f"字典里没有艺人「{arg}」，确认艺名对不对。"); return
             kb = InlineKeyboardMarkup([[
@@ -183,7 +229,7 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for admin_id in ADMIN_IDS:
                 try:
                     await ctx.bot.send_message(int(admin_id),
-                        f"🔗 绑定申请\n「{who}」(TG:{uid}) 想绑定艺人「{arg}」", reply_markup=kb)
+                        f"🔗 绑定申请\n「{who}」(TG:{uid}) 想绑定艺人「{art.name}」", reply_markup=kb)
                 except Exception:
                     pass
             await update.message.reply_text("已提交，等老板确认。")
@@ -194,39 +240,40 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             art = s.query(Artist).filter_by(tg_user_id=uid).first()
             if not art:
                 await update.message.reply_text("你还没绑定。先发：我是 你的艺名"); return
-            today = date.today()
-            d = artist_summary(s, art.id, today.year, today.month)
-            await update.message.reply_text(
-                f"🎤 {art.name} · {today.month}月\n单数 {d['n']}\n业绩 {_fmt(d['perf'])}\n"
-                f"门票 {_fmt(d['tickets'])}\n应发(月底应结) {_fmt(d['wage'])} MYR")
+            await update.message.reply_text(_artist_text(s, art))
             return
 
         # 以下管理员专用
         if not _is_admin(update):
             await update.message.reply_text("艺人指令：我是 X / 我的"); return
 
-        if cmd == "今日":
-            d = day_summary(s, date.today())
+        if cmd in ("今日", "昨日"):
+            day = biz_today() - timedelta(days=1 if cmd == "昨日" else 0)
+            d = day_summary(s, day)
             if not d["n"]:
-                await update.message.reply_text("今天还没单。"); return
-            lines = [f"{o.customer or '—'} 挂{_fmt(o.credit_k)}" for o in d["rows"][:20]]
+                await update.message.reply_text(f"{day.month}/{day.day} 还没单。"); return
+            names = {a.id: a.name for a in s.query(Artist).all()}
+            lines = [f"{names.get(o.artist_id, '?')} · {o.customer or '—'} 挂{_fmt(o.credit_k)} 现{_fmt(o.cash_m)}"
+                     for o in d["rows"][:30]]
             await update.message.reply_text(
-                f"📅 今日 {d['n']}单\n挂账{_fmt(d['K'])} 现金{_fmt(d['M'])} 门票{_fmt(d['O'])}")
+                f"📅 {day.month}/{day.day} {d['n']}单\n挂账{_fmt(d['K'])} 现金{_fmt(d['M'])} 门票{_fmt(d['O'])}\n—\n"
+                + "\n".join(lines))
+            return
+
+        if cmd == "待审":
+            n = s.query(ReviewItem).filter_by(status="待审").count()
+            await update.message.reply_text(f"审核队列 {n} 条待处理" + (f"\n{ADMIN_URL}/review" if ADMIN_URL else ""))
             return
 
         if cmd == "艺人":
-            art = s.query(Artist).filter_by(name=arg).first()
+            art = find_artist(s, arg)
             if not art:
                 await update.message.reply_text(f"没有艺人「{arg}」"); return
-            today = date.today()
-            d = artist_summary(s, art.id, today.year, today.month)
-            await update.message.reply_text(
-                f"🎤 {art.name} · {today.month}月\n单数{d['n']} 业绩{_fmt(d['perf'])} "
-                f"门票{_fmt(d['tickets'])} 应发{_fmt(d['wage'])}")
+            await update.message.reply_text(_artist_text(s, art))
             return
 
         if cmd == "妈咪":
-            mama = s.query(Mama).filter_by(name=arg).first()
+            mama = find_mama(s, arg)
             if not mama:
                 await update.message.reply_text(f"没有妈咪「{arg}」"); return
             d = mama_summary(s, mama.id)
@@ -240,20 +287,22 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             oid = arg.lstrip("#").strip()
             if not oid.isdigit():
                 await update.message.reply_text("用法：作废 #单号（例：作废 #128）"); return
-            from ..db.models import Order
             o = s.get(Order, int(oid))
             if not o:
                 await update.message.reply_text(f"没找到 #{oid}"); return
+            if o.status != "已审核":
+                await update.message.reply_text(f"#{oid} 已经是作废状态。"); return
             o.status = "作废"
-            s.add(OperationLog(action="作废单", target=f"order#{oid}"))
+            o.credit_status, o.cash_status = None, None
+            s.add(OperationLog(action="作废单", target=f"order#{oid}", detail="(TG)",
+                               operator=update.effective_user.full_name[:30]))
             s.commit()
             await update.message.reply_text(f"✅ #{oid} 已作废，所有报表自动排除。")
             return
 
         if cmd == "改":
             oid = arg.lstrip("#").strip()
-            url = os.getenv("ADMIN_URL", "").rstrip("/")
-            link = f"{url}/orders/{oid}/edit" if url else f"/orders/{oid}/edit"
+            link = f"{ADMIN_URL}/orders/{oid}/edit" if ADMIN_URL else f"/orders/{oid}/edit"
             await update.message.reply_text(f"改 #{oid} → 开这个链接改（改完所有报表自动更新）：\n{link}")
             return
 
@@ -262,31 +311,32 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("用法：催账 妈咪名 [范围]\n例：催账 小宝  /  催账 小宝 6.15-6.20")
                 return
             sub = arg.split()
-            mama = s.query(Mama).filter_by(name=sub[0]).first()
+            mama = find_mama(s, sub[0])
             if not mama:
                 await update.message.reply_text(f"没有妈咪「{sub[0]}」")
                 return
             start = end = None
             plabel = "全部"
+            year = biz_today().year
             if len(sub) > 1:
-                mr = re.match(r"(\d{1,2})\.(\d{1,2})-(\d{1,2})\.(\d{1,2})", sub[1])
-                if mr:
-                    start = date(2026, int(mr.group(1)), int(mr.group(2)))
-                    end = date(2026, int(mr.group(3)), int(mr.group(4)))
-                    plabel = sub[1]
+                rng = parse_range(sub[1], biz_today())
+                if not rng:
+                    await update.message.reply_text("范围格式：6.15-6.20"); return
+                start, end = rng
+                plabel = sub[1]
+                year = start.year
             from ..reports.build import mama_statement_png
-            png = mama_statement_png(s, mama.id, start, end, f"2026年 · {plabel}")
+            png = mama_statement_png(s, mama.id, start, end, f"{year}年 · {plabel}")
             if not png:
                 await update.message.reply_text(f"{sub[0]} 这段时间没单")
                 return
             await ctx.bot.send_photo(update.effective_chat.id, photo=BytesIO(png),
-                                     caption=f"{sub[0]} 对账单（{plabel}）")
+                                     caption=f"{mama.name} 对账单（{plabel}）")
             return
 
         if cmd in ("发月报", "月报群发"):
-            from ..db.models import Artist
             from ..reports.build import artist_payslip_png
-            y, mo = date.today().year, date.today().month
+            y, mo = biz_today().year, biz_today().month
             ar = re.match(r"(\d{4})-(\d{1,2})", arg) if arg else None
             if ar:
                 y, mo = int(ar.group(1)), int(ar.group(2))
@@ -312,14 +362,14 @@ async def on_private(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         await update.message.reply_text(
-            "管理员指令：今日 / 艺人 X / 妈咪 X / 催账 X [范围] / 发月报 [年-月] / 作废 #N / 改 #N\n艺人指令：我是 X / 我的")
+            "管理员指令：今日 / 昨日 / 待审 / 艺人 X / 妈咪 X / 催账 X [范围] / 发月报 [年-月] / 作废 #N / 改 #N\n"
+            "艺人指令：我是 X / 我的")
     finally:
         s.close()
 
 
 async def on_bind_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """管理员确认/拒 绑定。"""
-    from ..db.session import get_session
     from ..db.models import Artist
     q = update.callback_query
     await q.answer()
@@ -333,7 +383,12 @@ async def on_bind_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not art:
             return
         if action == "bind":
+            other = s.query(Artist).filter(Artist.tg_user_id == uid, Artist.id != art.id).first()
+            if other:
+                other.tg_user_id = None          # 一个 TG 号只绑一个艺人
             art.tg_user_id = uid
+            s.add(OperationLog(action="绑定艺人", target=f"artist#{art.id}", detail=f"TG:{uid}",
+                               operator=q.from_user.full_name[:30]))
             s.commit()
             await q.edit_message_text((q.message.text or "") + "\n\n✅ 已绑定")
             try:
@@ -353,7 +408,7 @@ async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     from ..reports.build import daily_report_png
     s = get_session()
     try:
-        yest = datetime.now(KL).date() - timedelta(days=1)
+        yest = datetime.now(KL).date() - timedelta(days=1)    # 19:00 跑, 前一晚的班
         png = daily_report_png(s, yest)
     finally:
         s.close()

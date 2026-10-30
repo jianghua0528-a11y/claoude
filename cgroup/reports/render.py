@@ -366,7 +366,11 @@ def render_mama_statement(mama_name, period, k_rows, m_rows, totals, currency="M
     cxm = (L + R) // 2
     d.text((cxm, y + _S(22)), "应结 C组", font=f_sumlbl, fill=DARK, anchor="mm")
     d.text((cxm, y + _S(52)), f"{_fmt(totals.get('应结'))} {currency}", font=f_sumnum, fill=DARK, anchor="mm")
-    detail = f"挂账×80% {_fmt(totals.get('挂账',0)*0.8)} + 门票 {_fmt(totals.get('门票'))} − 现金反水 {_fmt(totals.get('反水'))}"
+    recv = totals.get("应收")
+    if recv is not None and abs(recv - (totals.get("挂账", 0) * 0.8 + (totals.get("门票") or 0))) > 0.5:
+        detail = f"挂账应收(含门票) {_fmt(recv)} − 现金反水 {_fmt(totals.get('反水'))} · 直结单不计"
+    else:
+        detail = f"挂账×80% {_fmt(totals.get('挂账',0)*0.8)} + 门票 {_fmt(totals.get('门票'))} − 现金反水 {_fmt(totals.get('反水'))}"
     d.text((cxm, y + _S(78)), detail, font=f_small, fill=GRAY, anchor="mm")
     y += sum_h + _S(14)
 
@@ -379,13 +383,15 @@ def render_mama_statement(mama_name, period, k_rows, m_rows, totals, currency="M
 
 # ───────────────────────────── 艺人月报 (工资单) ─────────────────────────────
 def render_artist_payslip(artist_name, period, rows, total_wage_myr, rate=1.65,
-                          direct_rows=None, currency="MYR"):
+                          direct_rows=None, currency="MYR", deductions=None):
     """
     rows: [{'序','日期','场所','包厢','妈咪','客人','K','wp','O','分成'}]  分成=月底应结(可负)
     direct_rows: 直结单(不计工资) [{'日期','场所','妈咪','K'}]
-    total_wage_myr: 实发(Σ月底应结, MYR)
+    total_wage_myr: Σ月底应结 (MYR, 扣款前)
+    deductions: 本月待扣 预支/罚款 [{'类型','金额','备注'}] → 实发 = 应结 − Σ金额
     """
     direct_rows = direct_rows or []
+    deductions = deductions or []
     NEG = "#C0392B"
     pad = _S(24); gap = _S(20); row_h = _S(34); th_h = _S(34); head_h = _S(90)
     f_title = _font(22, bold=True); f_sub = _font(13); f_th = _font(12, bold=True)
@@ -417,8 +423,9 @@ def render_artist_payslip(artist_name, period, rows, total_wage_myr, rate=1.65,
     L, R = pad, W - pad
 
     sum_h = _S(86)
-    dblock_h = (_S(30) + _S(28) + max(len(direct_rows), 1) * _S(28)) if direct_rows else 0
-    H = head_h + pad + (th_h + max(len(rows), 1) * row_h) + _S(18) + sum_h + (_S(16) + dblock_h if direct_rows else 0) + _S(46)
+    ded_h = (_S(30) + len(deductions) * _S(28) + _S(10)) if deductions else 0
+    dblock_h = (_S(40) + _S(28) + max(len(direct_rows), 1) * _S(28) + _S(8)) if direct_rows else 0
+    H = head_h + pad + (th_h + max(len(rows), 1) * row_h) + _S(18) + (ded_h + _S(12) if deductions else 0) + sum_h + (_S(16) + dblock_h if direct_rows else 0) + _S(46)
 
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -452,12 +459,28 @@ def render_artist_payslip(artist_name, period, rows, total_wage_myr, rate=1.65,
                 d.text((xL[key], ym), fn(r), font=f, fill=colors[key], anchor="lm")
     y += max(len(rows), 1) * row_h + _S(18)
 
+    # 预支 / 罚款 扣款
+    net = total_wage_myr
+    if deductions:
+        d.rounded_rectangle([L, y, R, y + ded_h], radius=_S(8), fill=WHITE, outline=REDLINE, width=max(1, _S(1)))
+        d.text((L + _S(16), y + _S(16)), f"分成合计 {_fmt(total_wage_myr)} {currency} · 本月扣款", font=f_cellb,
+               fill=REDLINE, anchor="lm")
+        yy = y + _S(30)
+        for r in deductions:
+            amt = r.get("金额", 0) or 0
+            net -= amt
+            d.text((L + _S(16), yy + _S(14)), f"{r.get('类型', '')}  {r.get('备注') or ''}".strip(),
+                   font=f_cell, fill=DARK, anchor="lm")
+            d.text((R - _S(16), yy + _S(14)), f"−{_fmt(amt)}", font=f_cellb, fill=NEG, anchor="rm")
+            yy += _S(28)
+        y += ded_h + _S(12)
+
     # 实发
     d.rounded_rectangle([L, y, R, y + sum_h], radius=_S(8), fill=PINK)
     cxm = (L + R) // 2
     d.text((cxm, y + _S(22)), "实发工资", font=f_sumlbl, fill=DARK, anchor="mm")
-    rmb = total_wage_myr * rate
-    d.text((cxm, y + _S(52)), f"{_fmt(total_wage_myr)} {currency}  ≈  {_fmt(rmb)} RMB", font=f_sumnum, fill=DARK, anchor="mm")
+    rmb = net * rate
+    d.text((cxm, y + _S(52)), f"{_fmt(net)} {currency}  ≈  {_fmt(rmb)} RMB", font=f_sumnum, fill=DARK, anchor="mm")
     y += sum_h
 
     # 直结单(不计工资)

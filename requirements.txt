@@ -1,6 +1,6 @@
 # C组系统依赖
 python-telegram-bot[job-queue]==21.6   # 机器人 + 定时器
-anthropic==0.39.0              # Claude API (报单解析)
+anthropic==2.3.0               # Claude API (报单解析, SDK 2.x)
 fastapi==0.115.0               # 审核后台 web
 uvicorn[standard]==0.31.0      # web 服务器
 jinja2==3.1.4                  # 后台模板
