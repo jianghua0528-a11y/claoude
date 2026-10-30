@@ -4,9 +4,12 @@
 """
 from datetime import date
 
-from ..db.models import Order, Artist, Venue, Mama
+from ..db.models import Order, Artist, Venue, Mama, ExchangeRate
 from ..core.settlement import Order as EO, compute
+from ..core.queries import artist_deductions
 from . import render
+
+DEFAULT_RMB_RATE = 1.65
 
 WEEK = "一二三四五六日"
 
@@ -32,7 +35,7 @@ def daily_report_png(session, day):
 
 def mama_statement_png(session, mama_id, start=None, end=None, period_label="对账"):
     art, ven, mam = _maps(session)
-    k_rows = []; m_rows = []; TK = TO = TR = 0.0
+    k_rows = []; m_rows = []; TK = TO = TR = TRECV = 0.0
     for o in (session.query(Order).filter(Order.mama_id == mama_id, Order.status == "已审核")
               .order_by(Order.biz_date).all()):
         if start and (not o.biz_date or o.biz_date < start):
@@ -44,14 +47,15 @@ def mama_statement_png(session, mama_id, start=None, end=None, period_label="对
         if o.credit_k > 0:
             k_rows.append(dict(日期=dd, 艺人=art.get(o.artist_id, "?"), 场所=ven.get(o.venue_id, ""),
                                包厢=o.room, 客人=o.customer, K=o.credit_k, O=o.ticket_o, 应收=r.mama_receivable))
-            TK += o.credit_k; TO += o.ticket_o
+            TK += o.credit_k; TO += o.ticket_o; TRECV += r.mama_receivable
         if o.cash_m > 0:
             m_rows.append(dict(日期=dd, 艺人=art.get(o.artist_id, "?"), 场所=ven.get(o.venue_id, ""),
                                包厢=o.room, 客人=o.customer, wp=o.wp or o.cash_m, 流向=o.flow, 反水=r.mama_rebate))
             TR += r.mama_rebate
     if not k_rows and not m_rows:
         return None
-    totals = dict(挂账=TK, 门票=TO, 反水=TR, 应结=TK * 0.8 + TO - TR)
+    # 应结 = Σ引擎应收 − Σ反水 (直结/自单不进应收, 不能再按 K×0.8 硬算)
+    totals = dict(挂账=TK, 门票=TO, 反水=TR, 应收=TRECV, 应结=TRECV - TR)
     return render.render_mama_statement(mam.get(mama_id, "?"), period_label, k_rows, m_rows, totals)
 
 
@@ -75,5 +79,17 @@ def artist_payslip_png(session, artist_id, year, month):
         wage += r.artist_month_end
     if not rows and not direct:
         return None, 0
-    png = render.render_artist_payslip(art.get(artist_id, "?"), f"{year}年{month}月", rows, wage, direct_rows=direct)
-    return png, wage
+    name = art.get(artist_id, "?")
+    deductions = [dict(类型=a.kind, 金额=a.amount, 备注=a.notes)
+                  for a in artist_deductions(session, name, year, month)]
+    net = wage - sum(d["金额"] for d in deductions)
+    png = render.render_artist_payslip(name, f"{year}年{month}月", rows, wage, rate=rmb_rate(session),
+                                       direct_rows=direct, deductions=deductions)
+    return png, net
+
+
+def rmb_rate(session):
+    """最新 RMB 结算价 (财务流水→汇率 里录), 没录过用默认。"""
+    r = (session.query(ExchangeRate).filter(ExchangeRate.currency == "RMB")
+         .order_by(ExchangeRate.rate_date.desc(), ExchangeRate.id.desc()).first())
+    return r.settle_rate if r else DEFAULT_RMB_RATE

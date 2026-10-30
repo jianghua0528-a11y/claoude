@@ -1,17 +1,19 @@
 """
 报单解析引擎  ·  parse.py
 机器人收到报单群消息 → 调 Claude API 按规则解析 → 结构化订单 + 必问清单 → 进审核队列。
-依赖: ANTHROPIC_API_KEY (环境变量)。
+依赖: ANTHROPIC_API_KEY (环境变量), anthropic SDK 2.x。
+模型拒答时走服务端 fallback (fallbacks="default"); 拒答/截断/非JSON 抛 ParseError, 机器人把原文转人工。
 """
 import os
 import json
 import re
 
-from anthropic import Anthropic
+import anthropic
 
 from ..db.models import Mama, MamaAssistant, Artist, Venue, ReviewItem
+from ..core.intake import check_payload, IntakeError
 
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 
 SYSTEM = """你是 C 组（吉隆坡夜场艺人管理）的报单解析器。把艺人在报单群发的、格式乱七八糟的报单文字，解析成结构化订单。
 
@@ -80,21 +82,24 @@ SYSTEM = """你是 C 组（吉隆坡夜场艺人管理）的报单解析器。�
 注意：字段名严格用上面的（artist/biz_date/venue/room/mama/assistant/mode/customer/K/M/O/flow/start/end/warnings）。"""
 
 
-def _dict_context(session, limit_each=400):
-    """把字典压成给 Claude 的参考文本: 主妈咪+状态, 助理→主妈咪, 艺人, 场所+默认门票。"""
-    mamas = session.query(Mama).all()
-    lines = ["主妈咪(谁带的客, 名字用于认人):"]
-    lines.append("; ".join(m.name for m in mamas))
+def _dict_context(session):
+    """把字典压成给 Claude 的参考文本: 主妈咪(+别名), 助理→主妈咪, 艺人(+别名), 场所(+别名, 默认门票)。"""
+    def named(name, aliases):
+        return f"{name}({aliases})" if aliases else name
+
+    lines = ["主妈咪(括号内为别名, 名字用于认人):"]
+    lines.append("; ".join(named(m.name, m.aliases) for m in session.query(Mama).order_by(Mama.name)))
     amap = {}
-    for a in session.query(MamaAssistant).all():
-        mn = session.get(Mama, a.mama_id).name
-        amap.setdefault(mn, []).append(a.name)
+    for a in session.query(MamaAssistant).order_by(MamaAssistant.id):
+        amap.setdefault(a.mama.name, []).append(a.name)
     lines.append("助理→主妈咪:")
-    lines.append("; ".join(f"{','.join(v)}→{k}" for k, v in amap.items()))
-    lines.append("艺人:")
-    lines.append(", ".join(a.name for a in session.query(Artist).all()))
-    lines.append("场所(默认门票):")
-    lines.append("; ".join(f"{v.name}={int(v.default_ticket)}" for v in session.query(Venue).all()))
+    lines.append("; ".join(f"{','.join(v)}→{k}" for k, v in sorted(amap.items())))
+    lines.append("艺人(括号内为别名):")
+    lines.append(", ".join(named(a.name, a.aliases)
+                           for a in session.query(Artist).filter(Artist.active.is_(True)).order_by(Artist.name)))
+    lines.append("场所(括号内为别名)=默认门票:")
+    lines.append("; ".join(f"{named(v.name, v.aliases)}={int(v.default_ticket or 0)}"
+                           for v in session.query(Venue).order_by(Venue.name)))
     return "\n".join(lines)
 
 
@@ -107,18 +112,63 @@ def _clean_json(text):
     return text[i:j + 1] if i >= 0 and j > i else text
 
 
+class ParseError(RuntimeError):
+    """Claude 没给出可用结果(拒答/截断/非 JSON/接口错误), 原文转人工。"""
+
+
 def parse_reports(raw_text, session):
-    """解析一批报单文字 → dict(orders, open_shifts, dropped)。"""
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    system = SYSTEM + "\n\n# 参考字典\n" + _dict_context(session)
-    resp = client.messages.create(
-        model=MODEL, max_tokens=8000, system=system,
-        messages=[{"role": "user", "content": raw_text}])
-    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+    """解析一批报单文字 → dict(orders, open_shifts, dropped)。失败抛 ParseError。"""
+    client = anthropic.Anthropic()          # 读 ANTHROPIC_API_KEY
+    # 固定规则放第一块并缓存; 字典会变, 放缓存点之后
+    system = [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}},
+              {"type": "text", "text": "# 参考字典\n" + _dict_context(session)}]
+    try:
+        with client.beta.messages.stream(
+                model=MODEL, max_tokens=32000, system=system,
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+                messages=[{"role": "user", "content": raw_text}]) as stream:
+            resp = stream.get_final_message()
+    except anthropic.APIStatusError as e:
+        raise ParseError(f"Claude 接口错误 {e.status_code}: {e.message}") from e
+    except anthropic.APIConnectionError as e:
+        raise ParseError("连不上 Claude 接口") from e
+    if resp.stop_reason == "refusal":
+        raise ParseError("Claude 拒绝解析这条")
+    if resp.stop_reason == "max_tokens":
+        raise ParseError("报单太长, 解析被截断, 请分几条发")
+    text = "".join(b.text for b in resp.content if b.type == "text")
     try:
         return json.loads(_clean_json(text))
-    except json.JSONDecodeError:
-        return {"orders": [], "open_shifts": [], "dropped": 0, "_parse_error": text[:500]}
+    except json.JSONDecodeError as e:
+        raise ParseError(f"解析结果不是 JSON: {text[:200]}") from e
+
+
+def to_payload(o):
+    """Claude 输出的英文键订单 → 审核接口用的中文键 payload。"""
+    return {
+        "艺人": o.get("artist"), "场所": o.get("venue"), "包厢": o.get("room"),
+        "妈咪": o.get("mama"), "助理": o.get("assistant"), "合作模式": o.get("mode"),
+        "客人": o.get("customer"), "K": o.get("K", 0), "M": o.get("M", 0),
+        "O": o.get("O", 0), "流向": o.get("flow"), "上班": o.get("start"),
+        "下班": o.get("end"), "日期": o.get("biz_date"), "备注": o.get("备注", ""),
+    }
+
+
+def precheck(payload, session):
+    """入库前按字典复核一遍: 名字改回正名, 认不出的追加到 warnings。返回新增 warnings 列表。"""
+    try:
+        art, mama, ven, mode, flow = check_payload(payload, session)
+    except IntakeError as e:
+        return [str(e)]
+    payload["艺人"] = art.name
+    if mama and payload.get("妈咪") != mama.name:
+        payload["助理"] = payload.get("助理") or payload.get("妈咪")
+        payload["妈咪"] = mama.name
+    if ven:
+        payload["场所"] = ven.name
+    elif payload.get("场所"):
+        return [f"场所「{payload['场所']}」不在字典"]
+    return []
 
 
 def ingest(raw_text, source_group, session, tg_msg_id=None, tg_sender=None):
@@ -126,15 +176,9 @@ def ingest(raw_text, source_group, session, tg_msg_id=None, tg_sender=None):
     data = parse_reports(raw_text, session)
     items = []
     for o in data.get("orders", []):
-        # 字段对齐审核确认接口期望的中文键
-        payload = {
-            "艺人": o.get("artist"), "场所": o.get("venue"), "包厢": o.get("room"),
-            "妈咪": o.get("mama"), "助理": o.get("assistant"), "合作模式": o.get("mode"),
-            "客人": o.get("customer"), "K": o.get("K", 0), "M": o.get("M", 0),
-            "O": o.get("O", 0), "流向": o.get("flow"), "上班": o.get("start"),
-            "下班": o.get("end"), "日期": o.get("biz_date"), "备注": o.get("备注", ""),
-        }
-        warn = " / ".join(o.get("warnings", [])) or None
+        payload = to_payload(o)
+        warns = list(o.get("warnings") or []) + precheck(payload, session)
+        warn = " / ".join(dict.fromkeys(warns)) or None
         ri = ReviewItem(
             source_group=source_group, raw_message=raw_text[:2000],
             parsed_json=json.dumps(payload, ensure_ascii=False),
